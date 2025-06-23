@@ -1,0 +1,70 @@
+version: "3.8"
+
+services:
+
+  backend:
+    build: .
+    container_name: channels-backend
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    # volumes:
+      # - .:/app
+      # - /app/node_modules
+    command: npm start
+    depends_on:
+      - redis
+      - rabbitmq
+    networks:
+      - app-network
+  # nginx:
+  #   build: 
+  #     context: ./nginx-docker
+  #     dockerfile: DockerFile
+  #   container_name: channels-nginx
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - /etc/letsencrypt:/etc/letsencrypt
+  #     - ./nginx-docker/default.conf:/etc/nginx/nginx.conf
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - app-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: channels-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - app-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: channels-rabbitmq
+    ports:
+      - "5672:5672"   
+      - "15672:15672" 
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin123
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
+  rabbitmq-data:
+    driver: local

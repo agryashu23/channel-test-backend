@@ -1,0 +1,60 @@
+{
+  "name": "chips-demo-server",
+  "version": "1.0.0",
+  "description": "This endpoint is used to add a new user.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chips-social/chips-demo-server.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Chips-social/chips-demo-server/issues"
+  },
+  "homepage": "https://github.com/Chips-social/chips-demo-server#readme",
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.779.0",
+    "@aws-sdk/client-s3": "^3.525.0",
+    "amqplib": "^0.10.8",
+    "aws-sdk": "^2.1581.0",
+    "axios": "^1.6.7",
+    "bcryptjs": "^3.0.2",
+    "body-parser": "^1.20.2",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "csrf": "^3.1.0",
+    "dotenv": "^16.4.7",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.5.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "helmet": "^8.0.0",
+    "ioredis": "^5.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "luxon": "^3.6.1",
+    "mongodb": "^6.8.0",
+    "mongoose": "^8.0.4",
+    "multer": "^1.4.5-lts.1",
+    "node-cache": "^5.1.2",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.14",
+    "nodemon": "^3.1.0",
+    "open-graph-scraper": "^6.5.0",
+    "p-limit": "^2.3.0",
+    "pdf-lib": "^1.17.1",
+    "razorpay": "^2.9.6",
+    "sharp": "^0.33.2",
+    "socket.io": "^4.8.1",
+    "thumbsupply": "^0.4.0",
+    "uuid": "^9.0.1",
+    "whois-json": "^2.0.4"
+  }
+}

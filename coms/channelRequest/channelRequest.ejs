@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Invitation Email</title>
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: #1e1e1e;
+        color: #ffffff;
+        width: 100%;
+        text-align: center;
+      }
+
+      .container {
+        max-width: 500px;
+        margin: 40px 14px;
+        background-color: #2c2c2c;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+      }
+
+      .content{
+        text-align: center;
+        align-items: center;
+      }
+
+      .header {
+        margin-top: 20px;
+        margin-left: 15px;
+        margin-right: 15px;
+        background-color: transparent;
+        display: flex;
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .logo {
+        height: 40px;
+        margin-bottom: 10px;
+      }
+
+      .profile-picture {
+        width: 100px;
+        height: 100px;
+        border-radius: 50%;
+        margin: 20px auto;
+      }
+      .profile-placeholder {
+        width: 100px; 
+        height: 100px; 
+        background-color: #cccccc; 
+        border-radius: 50%; 
+        margin: 20px auto;
+      }
+
+      .content h3 {
+        margin: 4px 0 5px;
+        font-size: 18px;
+        font-weight: 500;
+        color: #E4E4E4;
+      }
+
+      .content p {
+        font-size: 14px;
+        margin: 5px 20px;
+        line-height: 1.6;
+        font-style: italic;
+        color: white;
+      }
+      .channel-logo{
+        height: 24px;
+      }
+      .mail-logo{
+        margin-left: 30px;
+        height: 24px;
+      }
+
+      .buttons {
+        display: flex;
+        width: 100% !important ;
+        max-width: 500px;
+        flex-direction: row;
+        justify-content: center !important;
+        align-items: center !important;
+        margin: 20px auto !important;
+        text-align: center !important;
+      }
+
+      .button {
+        text-align: center;
+        padding: 10px 16px !important;
+        border-radius: 25px;
+        font-size: 13px;
+        font-weight: 400;
+        text-decoration: none;
+        cursor: pointer;
+        border: none;
+      }
+
+      .accept-button {
+        background-color: #e4e4e4 !important;
+        color: #202020 !important;
+        border: none;
+      }
+
+      .view-profile-button {
+        background-color: transparent;
+        margin-left: 20px;
+        color: #e4e4e4!important;
+        border: 1px solid #e4e4e4 !important;
+      }
+
+      .footer {
+        background-color: #121212;
+        padding: 15px;
+        font-size: 12px;
+        color: #737373;
+        font-weight: 400;
+      }
+      .footer p {
+        font-size: 12px;
+        color: #737373;
+        font-weight: 400;
+      }
+
+
+      @media only screen and (max-width: 480px) {
+        .container {
+          width: 90%;
+        }
+        .button {
+          padding: 10px 10px !important;
+        }
+        
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <img
+          src="https://d3i6prk51rh5v9.cloudfront.net/channels_logo.png"
+          alt="Channels Logo"
+          class="channel-logo"
+        />
+        <!-- <img
+          src="https://d3i6prk51rh5v9.cloudfront.net/mail_icon.png"
+          alt="Icon"
+          class="mail-logo"
+        /> -->
+      </div>
+      <div class="content">
+        <% if (logo) { %>
+          <img src="<%= logo %>" alt="<%= name %>'s logo" class="profile-picture" />
+        <% } else { %>
+          <div class="profile-placeholder"></div>
+        <% } %>
+        <h3><%= name %></h3>
+        <p><%= name %> has requested to join <%= channelName %> Channel.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="text-align: center; margin: 20px auto;">
+          <tr>
+            <td align="center">
+              <a
+                href="https://channels.social/accept-invite?channelId=<%= channelId %>&userId=<%= userId %>"
+                class="button accept-button"
+                style="display: inline-block; padding: 10px 16px; border-radius: 25px; background-color: #1e69ea; color: #ffffff; text-decoration: none; font-size: 13px; font-weight: 400; margin: 0 10px;"
+              >
+                Accept
+              </a>
+              <a
+                href="https://channels.social/user/<%= username %>/profile?accept=invitechannel&channelId=<%= channelId %>&userId=<%= userId %>&channelName=<%= channelName %>"
+                class="button view-profile-button"
+                style="display: inline-block; padding: 10px 16px; border-radius: 25px; background-color: transparent; color: #ffffff; border: 1px solid #1e69ea; text-decoration: none; font-size: 13px; font-weight: 400; margin: 0 10px;"
+              >
+                View Profile
+              </a>
+            </td>
+          </tr>
+        </table>
+        
+      </div>
+      <div class="footer">
+        <p>
+          This email was intended for <strong><%= channelUser %></strong> (owner of
+          <%= channelName %> Channel).
+          <br/>
+          You are receiving Channels invitation emails. 
+          <br/>
+          © 2020 Chips2Connect Pvt. Ltd. All rights reserved.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

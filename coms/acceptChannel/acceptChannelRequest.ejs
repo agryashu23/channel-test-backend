@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Confirmation mail</title>
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: #1e1e1e;
+        color: #ffffff;
+        width: 100%;
+        text-align: center;
+      }
+
+      .container {
+        max-width: 500px;
+        margin: 40px 14px;
+        background-color: #2c2c2c;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+      }
+
+      .content{
+        text-align: center;
+        align-items: center;
+      }
+
+      .header {
+        margin-top: 20px;
+        margin-left: 15px;
+        margin-right: 15px;
+        background-color: transparent;
+        display: flex;
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .logo {
+        height: 40px;
+        margin-bottom: 10px;
+      }
+
+      .profile-picture {
+        width: 100px;
+        height: 100px;
+        border-radius: 50%;
+        margin: 20px auto;
+      }
+      .profile-placeholder {
+        width: 100px; 
+        height: 100px; 
+        background-color: #cccccc; 
+        border-radius: 50%; 
+        margin: 20px auto;
+      }
+      .content p {
+        font-size: 14px;
+        margin: 5px 20px;
+        line-height: 1.6;
+        font-style: italic;
+        color: white;
+      }
+      .channel-logo{
+        height: 24px;
+      }
+      .mail-logo{
+        margin-left: 30px;
+        height: 24px;
+      }
+
+      .button {
+        text-align: center;
+        padding: 10px 16px !important;
+        border-radius: 25px;
+        font-size: 13px;
+        font-weight: 400;
+        text-decoration: none;
+        color: #202020 !important;
+        cursor: pointer;
+        border: none;
+      }
+
+
+      .view-profile-button {
+        background-color: #e4e4e4 !important;
+        margin-left: 20px;
+        color: #202020 !important;
+      }
+
+      .footer {
+        background-color: #121212;
+        padding: 15px;
+        font-size: 12px;
+        color: #737373;
+        font-weight: 400;
+      }
+      .footer p {
+        font-size: 12px;
+        color: #737373;
+        font-weight: 400;
+      }
+
+
+      @media only screen and (max-width: 480px) {
+        .container {
+          width: 90%;
+        }
+        .button {
+          padding: 10px 10px !important;
+        }
+        
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <img
+          src="https://d3i6prk51rh5v9.cloudfront.net/channels_logo.png"
+          alt="Channels Logo"
+          class="channel-logo"
+        />
+       
+      </div>
+      <div class="content">
+        <% if (logo) { %>
+          <img src="<%= logo %>" alt="<%= username %>'s logo" class="profile-picture" />
+        <% } else { %>
+          <div class="profile-placeholder"></div>
+        <% } %>
+        <p><%= channelName %> channel has accepted your request.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="text-align: center; margin: 20px auto;">
+          <tr>
+            <td align="center">
+              <a
+                href="https://channels.social/user/<%= username %>/channel/<%= channelId %>"
+                class="button view-profile-button"
+                style="display: inline-block; padding: 10px 16px; border-radius: 25px; background-color: transparent; color: #ffffff;  text-decoration: none; font-size: 13px; font-weight: 400; margin: 0 10px;"
+              >
+                View Channel
+              </a>
+            </td>
+          </tr>
+        </table>
+        
+      </div>
+      <div class="footer">
+        <p>
+         
+          You are receiving Channels confirmation emails. 
+          <br/>
+          © 2020 Chips2Connect Pvt. Ltd. All rights reserved.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

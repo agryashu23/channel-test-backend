@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Welcome to Chips</title>
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: #000000;
+        width: 100%;
+        -webkit-text-size-adjust: 100%;
+        -ms-text-size-adjust: 100%;
+      }
+
+      table {
+        border-spacing: 0;
+        border-collapse: collapse;
+      }
+
+      img {
+        border: 0;
+        -ms-interpolation-mode: bicubic;
+      }
+
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        background-color: #000000;
+        color: white;
+        text-align: left;
+      }
+
+      .header{
+        text-align: center;
+        margin-top: 10px;
+      }
+
+      .content{
+        margin-left: 20px;
+        margin-right: 20px;
+      }
+
+      .content h3 {
+        color: #ffffff;
+        font-weight: 400;
+        font-size: 18px !important;
+      }
+
+      .content p {
+        color: #ffffff;
+        line-height: 1.4;
+        font-size: 16px !important;
+        font-weight: 300;
+      }
+
+      .content h4 {
+        color: #ffffff;
+        font-size: 16px;
+        margin-bottom: 0;
+      }
+
+      .footer {
+        background-color: #211F26;
+        text-align: center;
+        font-size: 12px;
+        padding-top: 10px;
+        padding-bottom: 8px;
+        color: #aaaaaa ;
+        margin-top: 20px;
+      }
+
+      .footer p {
+        color: #aaaaaa !important;
+      }
+
+      .welcome-image {
+        margin-top: 10px;
+        width: 100%;
+        height: auto;
+        display: block;
+        margin:0 auto;
+      }
+
+      .button-explore
+      {
+        display: block;
+        width: 100%;
+        padding: 10px 0;
+        text-align: center;
+        border-radius: 50px;
+        font-size: 15px;
+        margin-bottom: 10px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      .button-explore {
+        margin-top: 20px;
+        border: 2px solid #D0BCFF;
+        color: #D0BCFF;
+        background-color: transparent;
+        text-decoration: none;
+      }
+
+
+      .text-email {
+        color: #D0BCFF !important;
+        margin-top: 0;
+      }
+
+      .text-receive {
+        color: grey !important;
+        font-weight: 300 !important;
+        font-size: 14px !important;
+        text-align: left;
+        font-style: italic !important;
+      }
+
+      .links {
+        display: flex;
+        flex-direction: row;
+        align-items: center !important;
+        justify-content: center !important;
+        margin: 0 auto !important;
+        width: fit-content;
+      }
+      @media only screen and (max-width: 480px) {
+        .content h3 {
+          font-size: 22px !important;
+        }
+        .content h4 {
+          font-size: 22px !important;
+        }
+  
+        .content p {
+          font-size: 20px !important;
+        }
+  
+        .text-receive {
+          font-size: 18px !important;
+        }
+  
+        .button-explore {
+          font-size: 19px !important;
+          padding: 15px 0 !important; 
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <table role="presentation" class="container" width="100%">
+      <tr>
+        <td>
+          <div class="header">
+            <img src="https://chips-social.s3.ap-south-1.amazonaws.com/mails/Mask+group.png" alt="Chips Logo" />
+          </div>
+          <div class="content">
+            <h3>Hey <%= name %>,👋</h3>
+            <p>We’re so glad you’ve joined the Chips family!</p>
+            <p>
+              You’re now all set up on Channels, where managing your content and community is about to get a whole lotta easier.
+              You’ve got a website that’s as simple to handle as your social media, without needing any developers or designers.
+            </p>
+            <h4>Here are a few ways you can start making the most of Chips:</h4>
+            <p>p.s. our fav is adding custom buttons to profile</p>
+            <table role="presentation" width="100%">
+              <tr>
+                <td align="center">
+                  <img src="https://chips-social.s3.ap-south-1.amazonaws.com/mails/welcome_mail_image.png" alt="welcome-mailer" class="welcome-image"/>
+                </td>
+              </tr>
+            </table>
+            <a href="https://chips.social/profile/<%= username %>" class="button-explore" style="display: block; width: 100%; padding: 10px 0; text-align: center; border-radius: 50px;  margin-bottom: 10px; margin-left: auto; margin-right: auto; border: 2px solid #D0BCFF; color: #D0BCFF; background-color: transparent;">
+              Complete your profile
+            </a>
+            <a href="https://chips.social" class="button-explore" style="display: block; margin-top:10px !important; width: 100%; padding: 10px 0; text-align: center; border-radius: 50px;  margin-bottom: 10px; margin-left: auto; margin-right: auto; border: none !important; color: #D0BCFF; background-color: transparent;">
+              Discover cool stuff &rarr;
+            </a>
+            <p>
+              Chips is a new kid on the block, so there might be a few bumps along the way. But if we've made it to the point where you're receiving this emailer, we’re confident that with your support and feedback, we can make Chips the coolest hangout space on the internet.
+            </p>
+            <p>If you have any thoughts, questions, or just want to share how things are going, we’re all ears. You can write to us at
+            <a class="text-email" href="mailto:reach@chips.social" style="margin-top:-5px;">reach@chips.social</a>
+            </p>
+            <p>Thanks for being part of our journey. Let’s make something amazing together!</p>
+            <p class="text-receive" style="color: #aea9a9 !important; font-size: 14px !important; font-weight:400; font-style: italic !important;">
+              Cheers,<br />Meenakshi<br />Co-founder, Chips
+            </p>
+          </div>
+          <div class="footer">
+            <img src="https://chips-social.s3.ap-south-1.amazonaws.com/mails/logo_mail.png" alt="logo" style="height:20px !important; width:auto !important" />
+            <p>Follow us @chips.social</p>
+            <div class="links">
+              <a href="https://www.instagram.com/chips.social/" style="color:#D0BCFF !important; margin-right:5px;">Instagram  |</a>
+              <!-- <p style="color:#D0BCFF !important; margin-right:5px;">Twitter  |</p> -->
+              <a href="https://facebook.com/chips.social/" style="color:#D0BCFF !important; margin-right:5px;">Facebook  |</a>
+              <a href="https://www.linkedin.com/company/chips2connect/?viewAsMember=true" style="color:#D0BCFF !important; ">LinkedIn</a>
+            </div>
+            <p style="font-size:12px;">© 2020 Chips2Connect Pvt. Ltd. All rights reserved.</p>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

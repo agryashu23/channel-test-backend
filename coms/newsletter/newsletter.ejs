@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+        <meta charset="UTF-8">
+        <meta content="width=device-width, initial-scale=1.0" name="viewport">
+        <title>The Monthly Wrap</title>
+        <link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;700&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
+        <style>
+          body {
+            font-family: 'Poppins',Helvetica, sans-serif !important;
+            background-color: #1c1c1f !important;
+            width: 100%;
+            color: #ffffff !important;
+            margin: 0;
+            padding: 0;
+          }
+
+          h1, h2, h3, h4 {
+            font-family: 'Poppins', Helvetica,sans-serif;
+            color: #ffffff;
+            margin: 0;
+          }
+          .container {
+            max-width: 500px;
+            text-align: left;
+            margin: 0 auto;
+            background-color: #141218;
+            padding: 24px 0 0 0;
+          }
+          .header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+          }
+
+          .intro-text {
+            margin: 15px 0;
+          }
+          
+          .section-title {
+            font-size: 24px;
+            color: #D0BCFF;
+            margin: 20px 0 15px;
+            font-weight: bolder;
+            font-family: 'Familjen Grotesk', Helvetica, sans-serif !important;
+          }
+          .curation-card{
+            margin-bottom: 15px;
+            display: flex;
+            flex-direction: row;
+          }
+          .chips-section {
+            margin-bottom: 15px;
+            display: flex;
+            flex-direction:column;
+          }
+          .vertical-line {
+            border-radius: 50px;
+            margin-right: 10px;
+          }
+
+           .chips-card p {
+            font-size: 12px;
+            font-weight: 100;
+            margin-bottom: 6px;
+            color: #ffffff;
+            letter-spacing: 0.3px;
+          }
+        
+
+          .chips-card {
+            background-color: #211F26;
+            border-radius: 6px;
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+          }
+
+          .chips-read {
+            font-size: 12px !important;
+            font-weight: 400 !important;
+            color: #D0BCFF !important;
+            margin-top: -4px !important;
+          }
+
+          .footer {
+            background-color: #211F26;
+            text-align: center;
+            padding: 10px 8px;
+            max-width: 500px;
+            color: #9E9E9E;
+            margin-top: 10px;
+            margin: 0;
+          }
+
+          .footer-head {
+            display: flex;
+            flex-direction: row;
+            width: 70%;
+            align-items: center;
+            justify-content: start;
+          }
+
+          .footer-head h2 {
+            font-size: 13px;
+            font-weight: 500;
+            margin-left: 6px;
+            margin-top: 3px;
+          }
+
+         
+          .footer-bottom {
+            width: 30%;
+            text-align: right; 
+          }
+
+
+          .footer-bottom h4 {
+            color: #888888;
+            font-size: 8px;
+            margin-bottom: 2px;
+          }
+          .footer-bottom img {
+            height: 20px;
+            width: auto;
+          }
+
+          .footer-pvt {
+            margin-top: 25px;
+            font-size: 12px !important;
+            color: #9E9E9E !important;
+          }
+
+         
+
+          .desc-image, img {
+            width: 100%;
+            border-radius: 10px;
+          }
+
+
+          .meta-card {
+            background-color: #2B2930;
+            padding: 8px;
+            display:flex;
+            flex-direction: column;
+            gap: 2px;
+            border-radius: 8px;
+            margin-top: 8px;
+          }
+
+          .meta-card a {
+            color: #02a9fc !important;
+            font-size: 14px;
+            font-weight: normal;
+            text-decoration: none;
+          }
+
+          .meta-card p {
+            color: #bbbbbb !important;
+            font-size: 12px;
+            font-weight: normal;
+          }
+
+          .meta-card img {
+            height: 120px;
+          }
+
+         
+
+          .chips-date {
+            background-color: #2B2930;
+            display: flex;
+            flex-direction: row;
+            padding: 0;
+            align-items: center;
+            height: 50px;
+            margin-top: 10px;
+            border-radius: 8px;
+          }
+
+          .vertical-line3 {
+            width: 10px;
+            margin-top:0;
+            height:50px;
+            background-color: #D0BCFF;
+            border-radius: 50px;
+            margin-right: 10px;
+          }
+
+          .date {
+            color: #D0BCFF !important;
+            margin-top: 4px;
+            font-size: 14px;
+            width: 40px;
+          }
+
+
+          .date-title a {
+            font-size: 12px !important;
+            text-decoration: none !important;
+            color:white !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+
+          .footer-head img {
+            width: 25px;
+            height:25px;
+          }
+
+          
+          .footer-top{
+            display: flex; 
+            flex-direction:row; 
+            justify-content: space-between;
+            padding-left: 4px;
+            padding-right: 4px;
+          }
+          .curation-link{
+            margin-top:2px !important; 
+            font-size: 13px; 
+            color: #D0BCFF !important; 
+            text-decoration: none !important;
+          }
+          .header-h1{
+            font-family: 'Familjen Grotesk',Helvetica, sans-serif !important;
+            font-size: 30px;
+            font-weight: bold; 
+            margin: 0;
+            padding: 0;
+          }
+          .header-p{
+            font-size: 14px;
+            margin: 0 !important;
+            margin-top: 2px;
+            font-weight: lighter !important;
+            letter-spacing: 0.5 !important;
+            font-family: 'Poppins',Helvetica !important; 
+            color: white !important;
+          }
+          @media only screen and (max-width: 600px) {
+            .chips-date {
+              height: 60px;
+            }
+            .vertical-line3 {
+              height:60px;
+            }
+            .footer-head{
+              margin-top: 4px;
+              width: 60%;
+              align-items: center;
+            }
+            .footer-bottom {
+              width: 40%;
+            }
+            .footer-head h2 {
+              font-size: 12px;
+              font-weight: 400;
+              margin-left: 3px;
+            }
+            .header-h1{
+              font-size: 24px;
+              margin-top: 2px;
+            }
+            .header-p{
+              font-size: 12px;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <table role="presentation" class="container" width="100%">
+          <tr>
+            <td>
+            <div style="padding-left:24px; padding-right:24px;">
+              <div class="header">
+                <img alt="Logo" src="<%= logo %>" style="width: 60px;height: 60px;border-radius: 100%;margin-right: 10px; border:2px solid white !important;">
+                <div>
+                  <p class="header-p">A Newsletter by <%= name %></p>
+                  <h1 class="header-h1">The Monthly Wrap</h1>
+                </div>
+              </div>
+          <div class="intro-text">
+            <!-- <p style="color:white !important; font-style:italic !important; font-size: 16px;font-weight: 100 !important; font-family: 'Poppins', Helvetica !important;">Hi all,</p> -->
+            <p style="font-size: 16px !important;font-family: 'Poppins',Helvetica !important;font-style:italic !important;line-height: 1.4 !important;
+            color: #ffffff;font-weight: 100 !important;letter-spacing: 0.6px;"><%= description %></p>
+          </div>
+          <% if (imageUrl) { %>
+            <img alt="Image" src="<%= imageUrl %>" style="max-height: 150px; margin: 14px 0; max-width:400px;">
+          <% } %>
+          <hr style="border: 0; border-top: 0.5px solid #2B2930; margin: 10px auto; width: 100%;">
+          <!-- Curations of the Month -->
+          <% if (curations.length>0) { %>
+            <h2 class="section-title">Curations of the Month</h2>
+          <% } %>
+          
+          <% curations.forEach(function(curation) { %>
+            <table width="100%" class="curation-card" style="margin-bottom: 15px;">
+              <tr>
+                <td class="vertical-line" style="width: 2px; background-color: #FFC107;"></td>
+                <td style="padding-left: 10px;">
+                  <h3 style="font-size:16px !important; font-weight:bold; font-family:'Poppins',Helvetica;"><%= curation.name %></h3>
+                  <% if (curation.description) { %>
+                    <p style="margin-top:3px; font-size:13px; font-weight:lighter; color:white;"><%= curation.description %></p>
+                  <% } %>
+                  <a class="curation-link" href="<%= curation.url %>">View curation →</a>
+                </td>
+              </tr>
+            </table>
+          <% }); %>
+
+          <% if (curations.length>0) { %>
+            <hr style="border: 0; border-top: 0.5px solid #2B2930; margin: 10px auto; width: 100%;">
+          <% } %>
+          <!-- Chips of the Month -->
+          <% if (chips.length>0) { %>
+            <h2 class="section-title">Chips of the Month</h2>
+          <% } %>
+
+          <% chips.forEach(function(chip) { %>
+            <table width="100%" class="chips-section" style="margin-bottom: 15px; border-spacing: 0; max-width:350px">
+              <tr>
+                <td style="width: 2px; background-color: #fab19e; border-radius: 50px; margin-right:10px;"></td>
+                <td style="background-color: #211F26;border-radius: 6px; padding-left: 10px; padding-right: 10px;
+                 padding-bottom: 10px; vertical-align: top; margin-left:10px;" >
+                  <p style="font-size: 13px; color: #ffffff; font-weight: normal; margin-bottom: 0;  margin-top:8px;letter-spacing:0.6;">
+                    <%= chip.text.length > 300 ? chip.text.substring(0, 300) + '...' : chip.text %>
+                  </p>
+                  <a href="<%= chip.url %>" style="font-size: 13px !important; font-weight: 400 ; color: #D0BCFF !important; margin: 0 !important; text-decoration:none;">Read more →</a>
+                  <% if (chip.metaLink) { %>
+                    <table width="100%" class="meta-card" style="background-color: #2B2930; padding: 8px; border-radius: 8px; margin-top: 8px;">
+                      <tr>
+                        <td style="padding: 0;">
+                          <a style="font-size: 14px; color: #02a9fc; margin:0;"><%= chip.metaLink.ogTitle %></a>
+                          <% if (chip.metaLink.ogDescription) { %>
+                            <p style="font-size: 13px; color: #bbbbbb; font-weight: normal; margin:0; margin-top:2px;"><%= chip.metaLink.ogDescription %></p>
+                          <% } %>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 0;">
+                          <img src="<%= chip.metaLink.ogImage %>" alt="Event Image" style="height: 140px; border-radius: 8px; max-width:400px;margin-top:3px;">
+                        </td>
+                      </tr>
+                    </table>
+                    <% } else if (chip.link) { %>
+                      <div style="color: #02a9fc !important; font-size: 13px; margin-top: 8px; font-weight: normal;">
+                        <%= chip.link %>
+                      </div>
+                    <% } %>
+          
+                  <% if (chip.location.text) { %>
+                    <div  style="color: #02a9fc !important; font-size: 12px; margin-top: 8px; font-weight:normal;">
+                      <%= chip.location.text %>
+                    </div>
+                  <% } %>
+          
+                  <% if (chip.date.date) { %>
+                    <table  style="background-color: #2B2930; width: 100%; margin-top: 10px; border-radius: 8px;">
+                      <tr>
+                        <td style="width: 2px; background-color: #D0BCFF; border-radius: 50px;"></td>
+                        <td style="padding-left: 10px;">
+                          <div style="display:flex; flex-direction:row">
+                            <div  style="color: #D0BCFF; font-size: 14px; margin-top: 3px; font-weight:bold; width:30px;">
+                              <%= chip.formattedDate %>
+                            </div>
+                            <div style="margin-left: 20px; align-items:center; color: #bbbbbb; margin-top:2px;">
+                              <p style="font-size: 13px; color: #bbbbbb; margin: 0;"><%= chip.date.event %></p>
+                              <% if (chip.date.end_time) { %>
+                                <a style="font-size: 12px; color: white; text-decoration: none; margin-top: 2px;">
+                                  <%= chip.format_start_time %> - <%= chip.format_end_time %>
+                                </a>
+                              <% } %>
+                            </div>
+                          </div>
+                          
+                        </td>
+                      </tr>
+                    </table>
+                  <% } %>
+                  
+
+                </td>
+              </tr>
+            </table>
+          <% }); %>
+
+          <a href="https://chips.social/profile/<%= username %>" style="display: block; font-size: 13px; padding: 10px 20px; text-align: center; border-radius: 50px; margin: 20px auto; margin-bottom:20px; border: 2px solid #D0BCFF; color: #D0BCFF !important; background-color: transparent; text-decoration: none;">
+            View <%= username %> profile
+          </a>
+        </div>
+          <!-- Footer Section -->
+          <div class="footer">
+            <div class="footer-top">
+              <div class="footer-head">
+                <img alt="Logo" src="<%= logo %>" style="border:1px solid white !important; border-radius:100%;">
+                <h2><%= name %></h2>
+              </div>
+              <div class="footer-bottom">
+                <h4>Newsletter powered by</h4>
+                <img alt="logo" src="https://chips-social.s3.ap-south-1.amazonaws.com/mails/logo_mail.png" style="height: 20px !important; width: auto !important">
+              </div>
+            </div>
+            <p class="footer-pvt">© 2020 Chips2Connect Pvt. Ltd. All rights reserved.</p>
+          </div>
+         
+      </td>
+    </tr>
+  </table>
+  
+</body>
+</html>
