@@ -17,19 +17,26 @@ const BUSINESS_PREFIX = "embed:business:";
 
 
 exports.fetch_business_credentials = async function (req, res) {
-  const user_id = res.locals.verified_user_id;
+  const {username} = req.body;
 
   try {
-    const cacheKey = `${BUSINESS_PREFIX}${user_id}`;
-    const cachedVal = await redisService.getCache(cacheKey);
-    if (cachedVal) {
-      return res.json(cachedVal);
+    const user = await User.findOne({username}).select("_id").lean();
+    if(!user){
+      return res.json({
+        success: false,
+        message: "Invalid username",
+      });
     }
+    const user_id = user._id;
+    const cacheKey = `${BUSINESS_PREFIX}${user_id}`;
+     const cachedVal = await redisService.getCache(cacheKey);
+     if (cachedVal) {
+       return res.json(cachedVal);
+     }
     const business = await Business.findOne({ user_id }).lean();
 
     if (!business) {
-      return res.json({
-        success: false,
+      return res.json({success: false,
         message: "Invalid account details",
       });
     }

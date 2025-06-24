@@ -34,8 +34,7 @@ const TOPIC_EVENT_PREFIX = 'topic:event:';
 const POLL_PREFIX = 'poll:';
 const TOPIC_POLL_PREFIX = 'topic:poll:';
 
-
-
+const EVENT_SELECT_FIELDS = "_id name user joining startDate endDate startTime endTime locationText location paywallPrice paywall cover_image timezone type meet_url createdAt";
 
 exports.create_chat = async function (req, res) {
   const { channel, topic, content, replyTo, links } = req.body;
@@ -114,7 +113,7 @@ exports.create_chat = async function (req, res) {
         { path: "user", select: "_id username name logo" },
         {
           path: "replyTo",
-          select: "content media event poll",
+          select: "content media event poll user",
           populate: {
             path: "user",
             select: "_id username name logo",
@@ -127,11 +126,6 @@ exports.create_chat = async function (req, res) {
       [`${CHAT_TOPIC_PREFIX}${topic}:latest`],
       'chats',
     );
-    // await whatsappRabbitmqService.publishNotification({
-    //   channelId: channel,
-    //   topicId: topic,
-    //   newChatId: newChat._id
-    // });
     return res.json({
       success: true,
       message: "Chat created successfully",
@@ -151,8 +145,9 @@ exports.create_chat = async function (req, res) {
 
 exports.fetch_resource_chats = async function (req, res) {
   const { topicId } = req.body;
+  const user_id = res.locals.verified_user_id;
   try {
-    if(!topicId){
+    if(!topicId || !user_id){
       return res.json({
         success: false,
         message: "Topic ID is required",
@@ -233,7 +228,7 @@ exports.push_to_resource = async function (req, res) {
   const user_id = res.locals.verified_user_id;
  
   try {
-    const chat = await ChannelChat.findOne({ _id: chatId, user: user_id });
+    const chat = await ChannelChat.findOne({ _id: chatId});
     if (!chat) {
       return res.json({
         success: false,
@@ -261,7 +256,7 @@ exports.push_to_resource = async function (req, res) {
       success: true,
       message: "Pushed to resources",
       mediaId: mediaId,
-      chatId: chatId,
+      chat: chat,
     });
   } catch (error) {
     console.error("Error:", error);
@@ -278,7 +273,7 @@ exports.remove_from_resource = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const chat = await ChannelChat.findOne({ _id: chatId, user: user_id });
+    const chat = await ChannelChat.findOne({ _id: chatId });
     if (!chat) {
       return res.json({
         success: false,
@@ -319,9 +314,10 @@ exports.remove_from_resource = async function (req, res) {
 
 exports.fetch_topic_chats = async function (req, res) {
   const { topicId, limit = 15, skip = 0 } = req.body;
+  const user_id = res.locals.verified_user_id;
 
-  if (!topicId) {
-    return res.status(400).json({
+  if (!topicId || !user_id) {
+    return res.json({
       success: false,
       message: "Topic ID is required",
     });
@@ -338,9 +334,9 @@ exports.fetch_topic_chats = async function (req, res) {
     let chatsData = null;
     let reactionsData = null;
 
-    if (useCache) {
-      chatsData = await redisService.getCache(chatCacheKey);
-    }
+    // if (useCache) {
+    //   chatsData = await redisService.getCache(chatCacheKey);
+    // }
 
     if (!chatsData) {
       const chats = await ChannelChat.find({ topic: topicId })
@@ -350,6 +346,7 @@ exports.fetch_topic_chats = async function (req, res) {
         .populate([
           { path: "user", select: "_id username name logo color_logo" },
           { path: "replyTo", select: "_id content media event poll" },
+          { path: "event", select: EVENT_SELECT_FIELDS },
         ])
         .lean();
 

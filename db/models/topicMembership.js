@@ -27,7 +27,7 @@ const TopicMembershipSchema = new Schema(
     },
     role: {
       type: String,
-      enum: ["admin", "editor", "member"],
+      enum: ["admin", "editor", "member","owner"],
       default: "member",
     },
     email: {

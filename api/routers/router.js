@@ -261,11 +261,11 @@ router.post(
   TopicController.create_topic
 );
 router.post("/fetch/topic", TopicController.fetch_topic);
-// router.post(
-//   "/fetch/other/topics",
-//   VerifyUser,
-//   TopicController.fetch_other_topics
-// );
+ router.post(
+   "/fetch/my/channel/topics",
+   VerifyUser,
+   TopicController.fetch_my_channel_joined_topics
+ );
 router.post(
   "/fetch/channel/topics",
   VerifyUser,
@@ -304,9 +304,14 @@ router.post(
   ChatController.create_chat
 );
 
-router.post("/fetch/topic/chats", ChatController.fetch_topic_chats);
-router.post("/fetch/resource/chats", ChatController.fetch_resource_chats);
-router.post("/fetch/topic/events", EventController.fetch_topic_events);
+router.post("/fetch/topic/chats",VerifyUser, ChatController.fetch_topic_chats);
+router.post("/fetch/resource/chats",VerifyUser, ChatController.fetch_resource_chats);
+router.post("/fetch/topic/events", VerifyUser, EventController.fetch_topic_events);
+router.post("/fetch/topic/event/members",VerifyUser, EventController.fetch_event_memberships);
+router.post("/fetch/event/members",VerifyUser, EventController.fetch_all_event_members);
+
+
+
 
 router.post(
   "/delete/topic/chat",
@@ -700,7 +705,6 @@ router.post(
 );
 router.post(
   "/fetch/business/credentials",
-  VerifyUser,
   BusinessController.fetch_business_credentials
 );
 router.post(

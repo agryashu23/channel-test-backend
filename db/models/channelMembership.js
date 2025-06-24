@@ -8,7 +8,7 @@ const ChannelMembershipSchema = new mongoose.Schema({
   business: { type: mongoose.Schema.Types.ObjectId, ref: "Business", default: null, required: false },
   role: {
     type: String,
-    enum: ["admin", "editor", "member"],
+    enum: ["admin", "editor", "member","owner"],
     default: "member",
   },
   email: {

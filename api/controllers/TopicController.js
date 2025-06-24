@@ -10,6 +10,7 @@ var Event = mongoose.model("Event");
 var Poll = mongoose.model("Poll");
 var Summary = mongoose.model("Summary");
 const Invite = mongoose.model("Invite");
+const EventMembership = mongoose.model("EventMembership");
 var Channel = mongoose.model("Channel");
 var User = mongoose.model("User");
 const redisService = require("../services/redisService");
@@ -71,6 +72,15 @@ exports.create_topic = async function (req, res) {
       visibility: visibility,
     };
     const topic = await Topic.create(topic_data);
+    const user = await User.findById(user_id).select("email").lean();
+    await TopicMembership.create({
+      channel: channelDoc._id,
+      topic: topic._id,
+      user: user_id,
+      role: "owner",
+      email: user.email,
+      status: "joined",
+    });
     const id = topic._id;
     if (channelDoc) {
       channelDoc.topics.push(id);
@@ -195,7 +205,8 @@ exports.update_topic = async function (req, res) {
         topic: _id,
         channel: topic.channel,
         user: { $ne: null },
-        status: "joined"
+        status: "joined",
+        role:{$ne:"owner"}
       }).lean();
     }
     const topicsAllChannelCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${topic.channel}`;
@@ -247,7 +258,7 @@ exports.fetch_topic_members = async function (req, res, next) {
         members: cachedMembers,
       });
     }
-    const topicMembers = await TopicMembership.find({topic:topicId, user:{$ne:null}, status:"joined"}).lean();
+    const topicMembers = await TopicMembership.find({topic:topicId, user:{$ne:null}, status:"joined", role:{$ne:"owner"}}).lean();
     await redisService.setCache(cacheKey, topicMembers, 7200);
     res.json({
       success: true,
@@ -286,7 +297,6 @@ exports.fetch_my_channel_joined_topics = async function (req, res, next) {
         select: "name _id editability visibility",
       })
       .lean();
-
     const enrichedTopics = await Promise.allSettled(
       topicMemberships.map(async (membership) => {
       const topic = membership.topic;
@@ -363,6 +373,7 @@ exports.fetch_all_channel_topics = async function (req, res, next) {
       topic: { $in: topicIds },
       channel: channelId,
       user: { $ne: null },
+      role:{$ne:"owner"}
     }).lean();
    
     const membersMap = new Map();
@@ -393,37 +404,75 @@ exports.fetch_all_channel_topics = async function (req, res, next) {
 };
 
 
-
 exports.fetch_topic = async function (req, res, next) {
   const { id } = req.body;
+
   if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({
+    return res.json({
       success: false,
-      message: "Invalid or missing topicId",
+      message: "Invalid Topic ID",
     });
   }
   try {
     const cacheKey = `${TOPIC_PREFIX}${id}`;
-    const cachedTopic = await redisService.getCache(cacheKey);
+    const cacheTopicMembersKey = `${TOPICS_MEMBERS_PREFIX}${id}`;
+    const [cachedTopic, cachedMembers] = await Promise.all([
+      redisService.getCache(cacheKey),
+      redisService.getCache(cacheTopicMembersKey),
+    ]);
+
+    let members = cachedMembers;
+    if (!cachedMembers) {
+      let channelId = cachedTopic?.channel;
+      if (!channelId) {
+        const topicData = await Topic.findById(id).select("channel").lean();
+        if (!topicData) {
+          return res.json({
+            success: false,
+            message: "No Topic found",
+          });
+        }
+        channelId = topicData.channel;
+      }
+      members = await TopicMembership.find({
+        channel: channelId,
+        topic: id,
+        user: { $ne: null },
+        role:{$ne:"owner"}
+      }).lean();
+      await redisService.setCache(cacheTopicMembersKey, members, 3600);
+    }
     if (cachedTopic) {
       return res.json({
         success: true,
-        message: "Topic fetched successfully",
-        topic: cachedTopic,
+        message: "Topic fetched successfully from cache",
+        topic: {
+          ...cachedTopic,
+          members,
+        },
       });
     }
-    const topic = await Topic.findById(id).populate({path:"user",select:"name username _id logo color_logo"}).lean();
-    if (topic) {
-      await redisService.setCache(cacheKey, topic, 7200);
+    const topic = await Topic.findById(id)
+      .populate([
+        {path: "user", select: "name username _id logo color_logo" },
+        {path:"channel",select:"_id name visibility"}
+      ])
+      .lean();
+
+    if (!topic) {
       return res.json({
-        success: true,
-        message: "Topic fetched successfully",
-        topic: topic,
+        success: false,
+        message: "No Topic found",
       });
     }
-    res.json({
-      success: false,
-      message: "No Topic found",
+    await redisService.setCache(cacheKey, topic, 3600);
+    return res.json({
+      success: true,
+      message: "Topic fetched successfully",
+      topic: {
+        ...topic,
+        members,
+      },
     });
   } catch (error) {
     console.error("Error in fetching topic", error);
@@ -460,6 +509,7 @@ exports.delete_topic = async function (req, res, next) {
       Event.deleteMany({ topic:id }),
       Poll.deleteMany({ topic: id }),
       Summary.deleteMany({ topic: id }),
+      EventMembership.deleteMany({ topic: id }),
     ]);
     const channel = await Channel.findById(topic.channel);
     if (channel) {
@@ -806,6 +856,7 @@ exports.check_topic_membership = async function (req, res) {
     }
     if(!membership){
       const user = await User.findById(user_id).select("email").lean();
+
       await TopicMembership.create({topic:topicId,user:user_id,email:user.email,channel:channelId,business:topic.business,status:"request"});
       return res.json({
         success: false,

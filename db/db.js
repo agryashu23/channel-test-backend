@@ -42,3 +42,4 @@ const transaction = require("./models/transaction");
 const plan = require("./models/plan");
 const channelMembership = require("./models/channelMembership");
 const topicMembership = require("./models/topicMembership");
+const eventMembership = require("./models/eventMembership");

@@ -264,6 +264,7 @@ exports.check_domain_verification = async function (req, res) {
       user_id: user_id,
       verificationToken: verificationToken,
       provider: providerData,
+      type:"embed",
     });
 
     await business.save();

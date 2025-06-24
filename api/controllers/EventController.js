@@ -6,6 +6,8 @@ var Poll = mongoose.model("Poll");
 var Event = mongoose.model("Event");
 var Topic = mongoose.model("Topic");
 var Transaction = mongoose.model("Transaction");
+var EventMembership = require("../../db/models/eventMembership");
+
 const { uploadSingleImage } = require("../aws/uploads/Images");
 const axios = require("axios");
 const { DateTime } = require("luxon");
@@ -17,6 +19,9 @@ const redisService = require('../services/redisService');
 
 const EVENT_PREFIX = 'event:';
 const TOPIC_EVENT_PREFIX = 'topic:event:';
+const EVENT_MEMBERSHIP_PREFIX = 'event:membership:';
+const EVENT_MEMBERS_PREFIX = 'event:members:';
+
 
 const POLL_PREFIX = 'poll:';
 const TOPIC_POLL_PREFIX = 'topic:poll:';
@@ -24,7 +29,7 @@ const TOPIC_POLL_PREFIX = 'topic:poll:';
 const CHAT_TOPIC_PREFIX = 'topic_chats:';
 
 
-const EVENT_SELECT_FIELDS = "_id name joining startAt expiresAt locationText location paywallPrice paywall cover_image timezone type meet_url createdAt";
+const EVENT_SELECT_FIELDS = "_id name user joining startDate endDate startTime endTime locationText location paywallPrice paywall cover_image timezone type meet_url createdAt";
 const POLL_SELECT_FIELDS = "_id question options showResults multipleChoice createdAt";
 
 
@@ -92,22 +97,22 @@ exports.create_chat_event = async function (req, res) {
         parsedLocation = `https://www.google.com/maps/search/?api=1&query=${latLng.lat},${latLng.lng}`;
       }
     }
-
-    const startAt = DateTime.fromISO(`${startDate}T${startTime}`, { zone: timezone }).toUTC().toJSDate();
-    const expiresAt = DateTime.fromISO(`${endDate}T${endTime}`, { zone: timezone }).toUTC().toJSDate();
-
+    
     const event_data = {
       user: user_id,
       business: topicData.business,
       name,
       description,
       joining,
-      startAt,
-      expiresAt,
+      startDate,
+      endDate,
+      startTime,
+      endTime,
       locationText,
       location:parsedLocation,
       paywallPrice,
       paywall,
+      topic,
       joined_users:[],
       requested_users:[],
       cover_image: imageUrl,
@@ -128,9 +133,10 @@ exports.create_chat_event = async function (req, res) {
     event.chat = chat._id;
     await event.save();
     await chat.populate([
-      { path: "user", select: "_id username name" },
+      { path: "user", select: "_id username name logo color_logo" },
       { path: "event", select: EVENT_SELECT_FIELDS }
     ]);
+    req.app.get("io").to(topic).emit("receive_message", chat);
     await rabbitmqService.publishInvalidation(
       [cacheKey,chatCacheKey],
       'event',
@@ -206,14 +212,15 @@ exports.edit_chat_event = async function (req, res) {
         parsedLocation = `https://www.google.com/maps/search/?api=1&query=${latLng.lat},${latLng.lng}`;
       }
     }
-    const startAt = DateTime.fromISO(`${startDate}T${startTime}`, { zone: timezone }).toUTC().toJSDate();
-    const expiresAt = DateTime.fromISO(`${endDate}T${endTime}`, { zone: timezone }).toUTC().toJSDate();
+    
     const updatedEventData = {
       name,
       description,
       joining,
-      startAt,
-      expiresAt,
+      startDate,
+      endDate,
+      startTime,
+      endTime,
       paywallPrice,
       paywall,
       locationText,
@@ -252,25 +259,119 @@ exports.edit_chat_event = async function (req, res) {
   }
 };
 
+ exports.fetch_event_memberships = async function (req, res) {
+   try {
+     const { topicId } = req.body;
+     const user_id = res.locals.verified_user_id;
+
+     if (!topicId) {
+       return res.json({ success: false, message: "Topic ID is required" });
+     }
+     const cacheKey = `${EVENT_MEMBERSHIP_PREFIX}${topicId}:${user_id}`;
+     const cachedMemberships = await redisService.getCache(cacheKey);
+     if (cachedMemberships) {
+      return res.json({
+        success: true,
+        message: "Fetched event memberships for topic",
+        memberships: cachedMemberships, 
+      });
+     }
+     const memberships = await EventMembership.find({
+       topic:topicId,
+       user: user_id,
+     })
+       .select("event status user addedToCalendar topic")
+       .lean();
+     await redisService.setCache(cacheKey, memberships, 3600);
+     return res.json({
+       success: true,
+       message: "Fetched event memberships for topic",
+       memberships: memberships, 
+     });
+   } catch (err) {
+     console.error("Error fetching event memberships:", err);
+     return res.json({
+       success: false,
+       message: "Server error while fetching memberships",
+       error: err.message,
+     });
+   }
+ };
+
+
+ exports.fetch_all_event_members = async function (req, res) {
+  try {
+    const { eventId } = req.body;
+    const user_id = res.locals.verified_user_id;
+
+    if (!eventId) {
+      return res.json({ success: false, message: "Event ID is required" });
+    }
+    const event = await Event.findById(eventId).select("user").lean();
+    if(event.user.toString() !== user_id.toString()){
+      return res.json({ success: false, message: "You are not the owner of the event" });
+    }
+    const cacheKey = `${EVENT_MEMBERS_PREFIX}${eventId}`;
+    const cachedMembers = await redisService.getCache(cacheKey);
+    if (cachedMembers) {
+      return res.json({
+        success: true,
+        message: "Fetched event memberships for topic",
+        memberships: cachedMembers, 
+      });
+    }
+    const memberships = await EventMembership.find({
+      event:eventId,
+    })
+      .populate([
+        { path: "user", select: "_id username name logo color_logo" },
+      ])
+      .lean();
+    await redisService.setCache(cacheKey, memberships, 3600);
+    return res.json({
+      success: true,
+      message: "Fetched event memberships for topic",
+      memberships: memberships, 
+    });
+  } catch (err) {
+    console.error("Error fetching event memberships:", err);
+    return res.json({
+      success: false,
+      message: "Server error while fetching memberships",
+      error: err.message,
+    });
+  }
+};
+
+
 exports.fetch_event_data = async function (req, res) {
   const { eventId } = req.body;
+  const user_id = res.locals.verified_user_id;
 
   try {
     const cacheKey = `${EVENT_PREFIX}${eventId}`;
     const cachedEvent = await redisService.getCache(cacheKey);
     if (cachedEvent) {
-      return res.json(cachedEvent);
+      const eventMembership = await EventMembership.find({event:eventId,user:user_id}).lean();
+      return res.json({
+        success:true,
+        message:"Event fetched successfully",
+        event:cachedEvent,
+        memberships:eventMembership,
+      });
     }
-    const event = await Event.findById(eventId);
+    const event = await Event.findById(eventId).select(EVENT_SELECT_FIELDS);
     if (!event) {
       return res.json({ success: false, message: "Event not found." });
     }
+    const eventMembership = await EventMembership.find({event:eventId,user:user_id}).lean();
     const responseData = {
       success: true,
       message: "Event fetched.",
       event: event,
+      memberships:eventMembership,
     };
-    await redisService.setCache(cacheKey, responseData, 3600);
+    await redisService.setCache(cacheKey, event, 3600);
     res.json(responseData);
   } catch (error) {
     console.error("Error adding response:", error);
@@ -280,29 +381,25 @@ exports.fetch_event_data = async function (req, res) {
 
 exports.fetch_topic_events = async function (req, res) {
   const { topicId } = req.body;
-  
+  const user_id = res.locals.verified_user_id;
   try {
-    if(!topicId){
+    if(!topicId || !user_id){
       return res.json({
         success: false,
         message: "Topic ID is required",
       });
     }
-      const cacheKey = `${TOPIC_EVENT_PREFIX}${topicId}`;
-      const cachedChats = await redisService.getCache(cacheKey);
-      if (cachedChats) {
-        return res.json(cachedChats);
-      }
-    const events = await Event.find({ topic: topicId}).populate([
-      { path: "user", select: "_id username name logo color_logo" },
-    ])
-    const responseData = {
+    const cacheKey = `${TOPIC_EVENT_PREFIX}${topicId}`;
+    let events = await redisService.getCache(cacheKey);
+    if (!events) {
+      events = await Event.find({ topic: topicId }).lean();
+      await redisService.setCache(cacheKey, events, 3600);
+    }
+    return res.json({
       success: true,
-      message: "Event chats fetched successfully",
-      events:events,
-    };
-    await redisService.setCache(cacheKey, responseData, 3600);
-    return res.json(responseData);
+      message: "Events fetched successfully",
+      events: events,
+    });
   } catch (error) {
     console.error("Error fetching channel chats:", error);
     return res.status(500).json({
@@ -321,8 +418,7 @@ exports.join_event = async function (req, res) {
     const event = await Event.findById(eventId).populate([
       { path: "user", select: "_id username name logo color_logo" },
     ]);
-    const cacheKey = `${EVENT_PREFIX}${eventId}`;
-    const topicCacheKey = `${TOPIC_EVENT_PREFIX}${event.topic}`;
+    const cacheMemKey = `${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${user_id}`;
 
     if (!event) {
       return res.json({
@@ -330,33 +426,37 @@ exports.join_event = async function (req, res) {
         message: "Event not found.",
       });
     }
+    const alreadyMember = await EventMembership.findOne({event:eventId,user:user_id});
+    if(alreadyMember){
+      if(alreadyMember?.status === "joined"){
+        return res.json({ success: true, 
+          join:true,
+          calendar:true,
+          membership:alreadyMember,
+          message: "You are already a member of this event. Add the event to calendar" });
+      }
+      return res.json({ success: false, message: "Request already sent. Please wait for approval." });
+    }
     if(event.paywall && event.paywallPrice > 0){
       const transaction = await Transaction.findOne({ user: user_id, event: eventId });
       if (!transaction) {
         return res.json({ success: false, message: "Transaction not found" });
       }
     }
-    const alreadyJoined = event.joined_users.some(u => u.user.toString() === user_id);
-    const alreadyRequested = event.requested_users.some(u => u.user.toString() === user_id);
-
+    let membership = null;
     if (event.joining === "public") {
-      if (!alreadyJoined) {
-        event.joined_users.push({ user: user_id, joinedAt: new Date() });
-      }
+      membership = await EventMembership.create({event:eventId,user:user_id,topic:event.topic,status:"joined"});
     } else {
-      if (!alreadyRequested) {
-        event.requested_users.push({ user: user_id, requestedAt: new Date() });
-      }
+      membership = await EventMembership.create({event:eventId,user:user_id,topic:event.topic,status:"request"});
     }
-    await event.save();
     await rabbitmqService.publishInvalidation(
-      [cacheKey, topicCacheKey],
+      [cacheMemKey],
       'event'
     );
     return res.json({
       success: true,
       message: "Event joined sucessfully.",
-      event: event,
+      membership: membership,
     });
   } catch (error) {
     res.json({ success: false, message: "Event joining event failed!." });
@@ -382,12 +482,20 @@ exports.delete_chat_event = async function (req, res) {
     const cacheKey = `${EVENT_PREFIX}${eventId}`;
     const topicCacheKey = `${TOPIC_EVENT_PREFIX}${event.topic}`;
     const chatCacheKey = `${CHAT_TOPIC_PREFIX}${event.topic}:latest`;
+    const cacheMemKey = `${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${event.user}`;
     if (event.chat) {
       await ChannelChat.findOneAndDelete({ _id: event.chat });
+      await EventMembership.deleteMany({ event: eventId });
+      await Event.deleteOne({ _id: eventId });
     }
     await rabbitmqService.publishInvalidation(
-      [cacheKey, topicCacheKey, chatCacheKey],
+      [cacheKey, topicCacheKey, chatCacheKey,cacheMemKey],
       'event'
+    );
+    await chatRabbitmqService.publishInvalidation(
+      [`${EVENT_MEMBERSHIP_PREFIX}${event.topic}:*`],
+      'event',
+      'event-invalidation'
     );
     return res.json({
       success: true,

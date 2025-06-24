@@ -47,11 +47,21 @@ var EventSchema = new Schema(
       type: String,
       required: false,
     },
-    startAt: {
-      type: Date,
+    startDate: {
+      type: String,
+      required: false,
     },
-    expiresAt: {
-      type: Date,
+    endDate: {
+      type: String,
+      required: false,
+    },
+    startTime: {
+      type: String,
+      required: false,
+    },
+    endTime: {
+      type: String,
+      required: false,
     },
     timezone: {
       type: String,
@@ -86,15 +96,6 @@ var EventSchema = new Schema(
       enum: ["public", "private"],
       default: "public",
     },
-    requested_users: [{
-      user: { type: Schema.Types.ObjectId, ref: "User" },
-      requestedAt: { type: Date, default: Date.now }
-    }],
-    
-    joined_users: [{
-      user: { type: Schema.Types.ObjectId, ref: "User" },
-      joinedAt: { type: Date, default: Date.now }
-    }],
   },
   {
     timestamps: { createdAt: "createdAt", updatedAt: "updatedAt" },
