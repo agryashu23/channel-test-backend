@@ -7,18 +7,22 @@ const sendAcceptChannelRequest = async (
   channelId,
   channelName,
   username,
-  logo
+  logo,
+  topicId,
+  topicName,
+  eventId,
+  eventName
 ) => {
   try {
     const emailTemplate = await ejs.renderFile(
-      path.join(__dirname, "acceptChannelRequest.ejs"),
-      { channelId, channelName, username, logo }
+      path.join(__dirname, eventId!=="" ? "acceptEventRequest.ejs" : topicId!=="" ? "acceptTopicRequest.ejs" : "acceptChannelRequest.ejs"),
+      { channelId, channelName, username, logo,topicId,topicName,eventId,eventName }
     );
 
     const mailOptions = {
       from: `Channels.social <${process.env.SMTP_FROM_EMAIL}>`,
       to: to,
-      subject: `${channelName} channel confirmation!`,
+      subject: `${eventId!=="" ? eventName + " event " : topicId!=="" ? topicName+" in "+channelName : channelName} request accepted!`,
       html: emailTemplate,
     };
 

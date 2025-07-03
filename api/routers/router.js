@@ -73,7 +73,7 @@ router.post("/forgot/password", UserController.forgotPassword);
 router.post("/reset/password", UserController.resetPassword);
 router.post(
   "/claim/username",
-  
+
   VerifyUser,
   UserController.claimUserName
 );
@@ -100,7 +100,7 @@ router.post("/username/exist", UserController.username_exist);
 // router.post("/get-password", UserController.get_password);
 router.post(
   "/update/links",
-  
+
   VerifyUser,
   UserController.updateLinks
 );
@@ -108,21 +108,21 @@ router.post(
   "/update/details/profile",
   VerifyUser,
   upload.single("file"),
-  
+
   UserController.updateDetailsProfile
 );
 router.post(
   "/update/profile",
   VerifyUser,
   multipleUpload,
-  
+
   UserController.updateProfile
 );
 router.post("/fetch/userData", VerifyUser, UserController.fetch_user);
 router.post("/fetch/user/details", UserController.fetch_user_details);
 
 //Event
-router.post("/join/event", VerifyUser,  EventController.join_event);
+router.post("/join/event", VerifyUser, EventController.join_event);
 
 router.post(
   "/create/chat/event",
@@ -145,7 +145,7 @@ router.post(
 router.post(
   "/edit/chat/event",
   VerifyUser,
-  
+
   upload.single("file"),
   EventController.edit_chat_event
 );
@@ -153,7 +153,7 @@ router.post(
 router.post(
   "/delete/chat/event",
   VerifyUser,
-  
+
   EventController.delete_chat_event
 );
 
@@ -161,7 +161,7 @@ router.post(
 router.post(
   "/check/channel/name",
   VerifyUser,
-  
+
   ChannelController.check_channel_name
 );
 // router.post(
@@ -180,20 +180,20 @@ router.post("/delete/channel", VerifyUser, ChannelController.delete_channel);
 router.post(
   "/update/channel",
   VerifyUser,
-  
+
   multipleUploadChannel,
   ChannelController.update_channel
 );
 router.post(
   "/remove/channel/cover",
   VerifyUser,
-  
+
   ChannelController.removeChannelCover
 );
 router.post(
   "/save/channel/cover",
   VerifyUser,
-  
+
   upload.single("file"),
   ChannelController.saveChannelCover
 );
@@ -214,15 +214,23 @@ router.post(
   VerifyUser,
   ChannelController.fetch_channel_members
 );
-router.get("/accept/channel/request", VerifyUser,ChannelController.accept_channel_request);
+router.post(
+  "/accept/channel/request",
+  VerifyUser,
+  ChannelController.accept_channel_request
+);
 
-router.get("/decline/channel/request", VerifyUser,ChannelController.decline_channel_request);
+router.post(
+  "/decline/channel/request",
+  VerifyUser,
+  ChannelController.decline_channel_request
+);
 router.post("/join/channel", VerifyUser, ChannelController.join_channel);
 router.post("/leave/channel", VerifyUser, ChannelController.leave_channel);
 router.post(
   "/remove/channel/member",
   VerifyUser,
-  
+
   ChannelController.remove_channel_member
 );
 router.post(
@@ -232,40 +240,47 @@ router.post(
 );
 router.post("/delete/topic", VerifyUser, TopicController.delete_topic);
 
-//topics
+router.post(
+  "/accept/topic/request",
+  VerifyUser,
+  TopicController.accept_topic_request
+);
 
 router.post(
-  "/update/topic",
+  "/decline/topic/request",
   VerifyUser,
-  TopicController.update_topic
+  TopicController.decline_topic_request
 );
-  router.post(
-    "/join/topic",
-    VerifyUser,
-    TopicController.join_topic
-  );
-  router.post(
-    "/leave/topic",
-    VerifyUser,
-    TopicController.leave_topic
-  );
+
+//topics
+
+router.post("/update/topic", VerifyUser, TopicController.update_topic);
+router.post(
+  "/fetch/topic/members",
+  VerifyUser,
+  TopicController.fetch_topic_members
+);
+router.post(
+  "/remove/topic/member",
+  VerifyUser,
+  TopicController.remove_topic_member
+);
+
+router.post("/join/topic", VerifyUser, TopicController.join_topic);
+router.post("/leave/topic", VerifyUser, TopicController.leave_topic);
 // router.post(
 //   "/fetch/topic/subscription",
 //   TopicController.fetch_topic_subscription
 // );
 // router.post("/visit/topic", VerifyUser, TopicController.visit_topic);
 router.post("/mark/as/read", VerifyUser, TopicController.mark_as_read);
+router.post("/create/topic", VerifyUser, TopicController.create_topic);
+router.post("/fetch/topic", VerifyUser, TopicController.fetch_topic);
 router.post(
-  "/create/topic",
+  "/fetch/my/channel/topics",
   VerifyUser,
-  TopicController.create_topic
+  TopicController.fetch_my_channel_joined_topics
 );
-router.post("/fetch/topic", TopicController.fetch_topic);
- router.post(
-   "/fetch/my/channel/topics",
-   VerifyUser,
-   TopicController.fetch_my_channel_joined_topics
- );
 router.post(
   "/fetch/channel/topics",
   VerifyUser,
@@ -279,15 +294,11 @@ router.post(
 );
 
 //faqs
-router.post("/create/faq", VerifyUser,  FaqsController.create_faq);
+router.post("/create/faq", VerifyUser, FaqsController.create_faq);
 router.post("/fetch/user/faqs", FaqsController.fetch_faqs);
-router.post(
-  "/update/faqs/order",
-  VerifyUser,
-  FaqsController.update_faqs_order
-);
-router.post("/delete/faq", VerifyUser,  FaqsController.delete_faq);
-router.post("/update/faq", VerifyUser,  FaqsController.update_faq);
+router.post("/update/faqs/order", VerifyUser, FaqsController.update_faqs_order);
+router.post("/delete/faq", VerifyUser, FaqsController.delete_faq);
+router.post("/update/faq", VerifyUser, FaqsController.update_faq);
 
 //utils
 router.post("/channel/unsplash/search", UtilsController.channel_unsplash);
@@ -304,37 +315,55 @@ router.post(
   ChatController.create_chat
 );
 
-router.post("/fetch/topic/chats",VerifyUser, ChatController.fetch_topic_chats);
-router.post("/fetch/resource/chats",VerifyUser, ChatController.fetch_resource_chats);
-router.post("/fetch/topic/events", VerifyUser, EventController.fetch_topic_events);
-router.post("/fetch/topic/event/members",VerifyUser, EventController.fetch_event_memberships);
-router.post("/fetch/event/members",VerifyUser, EventController.fetch_all_event_members);
-
-
-
-
+router.post("/fetch/topic/chats", VerifyUser, ChatController.fetch_topic_chats);
+router.post("/pin/chat", VerifyUser, ChatController.pin_chat);
+router.post("/unpin/chat", VerifyUser, ChatController.unpin_chat);
 router.post(
-  "/delete/topic/chat",
+  "/fetch/pinned/chats",
   VerifyUser,
-  ChatController.delete_topic_chat
+  ChatController.fetch_pinned_chats
 );
 router.post(
-  "/push/to/resource",
+  "/fetch/resource/chats",
   VerifyUser,
-  ChatController.push_to_resource
+  ChatController.fetch_resource_chats
 );
+router.post(
+  "/fetch/topic/events",
+  VerifyUser,
+  EventController.fetch_topic_events
+);
+router.post(
+  "/fetch/topic/event/members",
+  VerifyUser,
+  EventController.fetch_event_memberships
+);
+router.post(
+  "/fetch/event/members",
+  VerifyUser,
+  EventController.fetch_all_event_members
+);
+router.post(
+  "/accept/event/request",
+  VerifyUser,
+  EventController.accept_event_request
+);
+
+router.post(
+  "/decline/event/request",
+  VerifyUser,
+  EventController.decline_event_request
+);
+
+router.post("/delete/topic/chat", VerifyUser, ChatController.delete_topic_chat);
+router.post("/push/to/resource", VerifyUser, ChatController.push_to_resource);
 router.post(
   "/remove/from/resource",
   VerifyUser,
   ChatController.remove_from_resource
 );
 
-router.post(
-  "/toggle/reaction",
-  VerifyUser,
-  ChatController.toggle_reaction
-);
-
+router.post("/toggle/reaction", VerifyUser, ChatController.toggle_reaction);
 
 //invites
 router.post(
@@ -361,7 +390,7 @@ router.post(
 router.post(
   "/create/curation",
   VerifyUser,
-  
+
   upload.single("file"),
   CurationController.create_curation
 );
@@ -379,7 +408,7 @@ router.post(
 router.post(
   "/delete/curation",
   VerifyUser,
-  
+
   CurationController.delete_curation
 );
 // router.post("/fetch/curations", CurationController.fetch_all_curations);
@@ -399,19 +428,19 @@ router.post(
 router.post(
   "/toggle/save/curation",
   VerifyUser,
-  
+
   CurationController.toggle_save_curation
 );
 router.post("/fetch/saved/curations", CurationController.fetch_saved_curations);
 // router.post("/existing/curations", CurationController.existing_curations);
 router.post(
   "/set/curation/searched",
-  
+
   CurationController.setCurationSearched
 );
 router.post(
   "/set/curation/engagement",
-  
+
   CurationController.setCurationEngagement
 );
 router.post("/curation/sharedby", CurationController.curation_shared_by);
@@ -427,14 +456,14 @@ router.post("/delete/query", QueryController.delete_query);
 router.post(
   "/create/chip",
   VerifyUser,
-  
+
   multipleUploadChip,
   ChipController.create_chip
 );
 router.post(
   "/edit/chip",
   VerifyUser,
-  
+
   multipleUploadChip,
   ChipController.edit_chip
 );
@@ -454,40 +483,40 @@ router.post("/fetch/chip/from/chipId", ChipController.fetch_chip_from_chipId);
 router.post(
   "/add/curation/to/chip",
   VerifyUser,
-  
+
   ChipController.add_curation_to_chip
 );
-router.post("/upvote/chip", VerifyUser,  ChipController.upvote_chip);
+router.post("/upvote/chip", VerifyUser, ChipController.upvote_chip);
 router.post("/chip/shared/by", ChipController.chip_shared_by);
 router.post("/metadata", ChipController.metadata);
 router.post(
   "/save/chip",
   VerifyUser,
-  
+
   ChipController.toggle_save_chip
 );
-router.post("/delete/chip", VerifyUser,  ChipController.delete_chip);
+router.post("/delete/chip", VerifyUser, ChipController.delete_chip);
 router.post(
   "/set/chip/engagement",
-  
+
   ChipController.setChipEngagement
 );
 router.post(
   "/push/chip/to/curation",
   VerifyUser,
-  
+
   ChipController.update_chip_curation
 );
 router.post("/chip/sharedby", ChipController.chip_shared_by);
 router.post(
   "/delete/field/from/chip",
-  
+
   ChipController.deleteFieldFromChip
 );
 router.post(
   "/save/excluive/chip/data",
   VerifyUser,
-  
+
   ChipController.save_exclusive_chip_data
 );
 router.post("/get/excluive/chip/data", ChipController.get_exclusive_chip_data);
@@ -499,7 +528,7 @@ router.post(
 router.post(
   "/edit/profile",
   VerifyUser,
-  
+
   ProfileController.edit_profile
 );
 
@@ -522,19 +551,19 @@ router.post(
 
 router.post(
   "/set/profile/engagement",
-  
+
   ProfileController.setProfileEngagement
 );
 
 // router.post(
 //   "/post/editors/curations",
-//   
+//
 //   AdminController.post_curation_picks
 // );
 // router.post(
 //   "/post/banner/cards",
 //   VerifyUser,
-//   
+//
 //   AdminController.post_banner_cards
 // );
 // router.post("/get/editors/curations", AdminController.get_curation_picks);
@@ -551,33 +580,33 @@ router.post(
 );
 router.post(
   "/change/email/access",
-  
+
   AdminController.change_email_access
 );
 
 router.post(
   "/create/chip/comment",
   VerifyUser,
-  
+
   CommentController.create_chip_comment
 );
 router.post(
   "/create/chip/comment/reply",
   VerifyUser,
-  
+
   CommentController.create_chip_comment_reply
 );
 router.post("/fetch/chip/comments", CommentController.fetch_chip_comments);
 router.post(
   "/toggle/comment/upvote",
   VerifyUser,
-  
+
   CommentController.toggle_comment_upvote
 );
 router.post(
   "/toggle/comment/reply/upvote",
   VerifyUser,
-  
+
   CommentController.toggle_comment_reply_upvote
 );
 
@@ -616,19 +645,19 @@ router.post(
 router.post(
   "/create/profile/category",
   VerifyUser,
-  
+
   SegmentController.create_profile_category
 );
 router.post(
   "/update/profile/category",
   VerifyUser,
-  
+
   SegmentController.update_profile_category
 );
 router.post(
   "/delete/profile/category",
   VerifyUser,
-  
+
   SegmentController.delete_profile_category
 );
 router.post(
@@ -647,25 +676,25 @@ router.post(
 router.post(
   "/push/item/to/category",
   VerifyUser,
-  
+
   SegmentController.update_item_category
 );
 router.post(
   "/update/profile/categories/order",
   VerifyUser,
-  
+
   SegmentController.update_profile_categories_order
 );
 router.post(
   "/update/items/order/category",
   VerifyUser,
-  
+
   SegmentController.update_items_order_category
 );
 
 // router.post(
 //   "/update/channel/members/abc",
-//   
+//
 //   SegmentController.update_channel_members
 // );
 
@@ -702,32 +731,6 @@ router.post(
   "/check/api/key/generated",
   VerifyUser,
   EmbedController.check_api_key_generated
-);
-router.post(
-  "/fetch/business/credentials",
-  BusinessController.fetch_business_credentials
-);
-router.post(
-  "/request/login/auto",
-  VerifyUser,
-  BusinessController.request_login_auto
-);
-router.post(
-  "/fetch/channel/requests",
-  VerifyUser,
-  BusinessController.fetch_channel_requests
-);
-router.post(
-  "/fetch/all/channel/requests",
-  VerifyUser,
-  BusinessController.fetch_all_channel_requests
-);
-router.post("/save/admin/api", VerifyUser, BusinessController.save_admin_api);
-router.post(
-  "/save/admin/upload",
-  VerifyUser,
-  upload.single("file"),
-  BusinessController.save_admin_upload
 );
 
 //
@@ -823,7 +826,87 @@ router.get("/region/health", HealthController.check);
 router.get("/services/health", HealthController.health_check);
 
 //payment
-router.post("/create-order", TransactionController.create_order_subscription);
-router.post("/verify-payment", PaymentController.verify_payment_subscription);
+router.post(
+  "/create/transaction/order",
+  VerifyUser,
+  TransactionController.create_transaction_order
+);
+router.post(
+  "/calculate/upgrade/details",
+  VerifyUser,
+  TransactionController.calculate_upgrade_details
+);
+router.post("/verify/payment", VerifyUser, PaymentController.verify_payment);
+router.post("/failed/payment", VerifyUser, PaymentController.failed_payment);
 
+//business
+router.post(
+  "/fetch/business/credentials",
+  BusinessController.fetch_business_credentials
+);
+router.post(
+  "/request/login/auto",
+  VerifyUser,
+  BusinessController.request_login_auto
+);
+router.post(
+  "/fetch/channel/requests",
+  VerifyUser,
+  BusinessController.fetch_channel_requests
+);
+router.post(
+  "/fetch/topic/requests",
+  VerifyUser,
+  BusinessController.fetch_topic_requests
+);
+router.post(
+  "/fetch/event/requests",
+  VerifyUser,
+  BusinessController.fetch_event_requests
+);
+
+router.post("/save/admin/api", VerifyUser, BusinessController.save_admin_api);
+router.post(
+  "/save/admin/upload",
+  VerifyUser,
+  upload.single("file"),
+  BusinessController.save_admin_upload
+);
+router.post(
+  "/fetch/business/plans",
+  VerifyUser,
+  PlanController.fetch_business_plans
+);
+router.post(
+  "/fetch/transaction/history",
+  VerifyUser,
+  TransactionController.fetch_transaction_history
+);
+router.post(
+  "/update/business/customizations",
+  VerifyUser,
+  BusinessController.update_business_customizations
+);
+
+router.post(
+  "/fetch/business/roles/members",
+  VerifyUser,
+  BusinessController.fetch_roles_and_members
+);
+router.post(
+  "/fetch/business/channels/topics",
+  VerifyUser,
+  BusinessController.fetch_business_channels_topics
+);
+router.post(
+  "/update/user/business/role",
+  VerifyUser,
+  BusinessController.update_user_business_role
+);
+
+router.post(
+  "/remove/user/business/member",
+  VerifyUser,
+  BusinessController.remove_user_business_member
+);
 module.exports = router;

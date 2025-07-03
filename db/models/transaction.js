@@ -12,12 +12,26 @@ const transactionSchema = new mongoose.Schema(
       ref: "Event",
       required: false,
     },
+    business:{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Business",
+      required:false,
+    },
+    channel:{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Channel",
+      required: false,
+    },
+    topic:{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Topic",
+      required: false,
+    },
     paymentSubscription: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Payment",
       required: false,
     },
-
     planId: { type: String, ref: "Plan", required: false },
     billingCycle: {
       type: String,
@@ -48,8 +62,9 @@ const transactionSchema = new mongoose.Schema(
     },
     type: {
       type: String,
+      enum: ["subscription", "channel", "topic","event"],
+      default: "subscription",
     },
-    paidAt: { type: Date },
   },
   {
     timestamps: true,

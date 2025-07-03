@@ -189,21 +189,6 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // socket.on("identify_user", async (userId) => {
-  //   if (!userId) return;
-
-  //   try {
-  //     await User.findByIdAndUpdate(
-  //       userId,
-  //       { $set: { isOnline: true } },
-  //       { new: true, upsert: true }
-  //     ).exec();
-
-  //     socket.userId = userId;
-  //   } catch (error) {
-  //     console.error("Error updating user online status:", error);
-  //   }
-  // });
   socket.on("join_topic", (data) => {
     const { username, topicId } = data;
     if (username && topicId) {
@@ -227,9 +212,9 @@ io.on("connection", async (socket) => {
       console.error("Error saving message via socket:", error);
     }
   });
+ 
   socket.on("delete_message", (data) => {
     const { chatId, topicId } = data;
-
     try {
       console.log(data);
       io.to(topicId).emit("chat_deleted", { chatId, topicId });

@@ -18,6 +18,10 @@ var TopicSchema = new Schema({
     type: String,
     required: true,
   },
+  description: {
+    type: String,
+    required: false,
+  },
   channel: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Channel",
@@ -41,25 +45,22 @@ var TopicSchema = new Schema({
       return this.summaryEnabled && this.summaryType === "auto";
     },
   },
-  paywall: {
-    type: Boolean,
-    default: false,
-  },
+
   redirect_url: {
     type: String,
   },
   paywallPrice: {
-    type: String,
+    type: Number,
     required: false,
   },
   visibility: {
     type: String,
-    enum: ["anyone", "invite","me"],
+    enum: ["anyone", "invite", "paid"],
     default: "anyone",
   },
   editability: {
     type: String,
-    enum: ["anyone", "invite","me"],
+    enum: ["anyone", "invite", "me"],
     default: "anyone",
   },
   whatsappEnabled: {

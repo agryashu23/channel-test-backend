@@ -4,17 +4,15 @@ var User = mongoose.model("User");
 var DMRoom = mongoose.model("DMRoom");
 var DMChat = mongoose.model("DMChat");
 var Business = mongoose.model("Business");
-const rabbitmqService = require('../services/rabbitmqService');
-const redisService = require('../services/redisService');
+const rabbitmqService = require("../services/rabbitmqService");
+const redisService = require("../services/redisService");
 const {
   uploadMultipleImagesChips,
   uploadMultipleVideos,
-  uploadMultipleFiles
+  uploadMultipleFiles,
 } = require("../aws/uploads/Images");
-const DM_INBOX_PREFIX = 'dm:inbox:';
-const DM_CHAT_PREFIX = 'dm:chat:';
-
-
+const DM_INBOX_PREFIX = "dm:inbox:";
+const DM_CHAT_PREFIX = "dm:chat:";
 
 exports.get_inbox_messages = async (req, res) => {
   const userId = res.locals.verified_user_id;
@@ -28,7 +26,7 @@ exports.get_inbox_messages = async (req, res) => {
         message: "Inbox fetched successfully.",
         messages: cachedInbox,
       });
-    };
+    }
     const rooms = await DMRoom.find({ users: userId })
       .populate({
         path: "lastMessage",
@@ -85,7 +83,7 @@ exports.get_inbox_messages = async (req, res) => {
 exports.create_dm_chat = async function (req, res) {
   const sender = res.locals.verified_user_id;
   const { receiver, content, replyTo, links } = req.body;
-  if(!receiver){
+  if (!receiver) {
     return res.json({
       success: false,
       message: "Receiver is required",
@@ -96,15 +94,13 @@ exports.create_dm_chat = async function (req, res) {
   const link_files = JSON.parse(links || "[]");
 
   try {
-    const cacheKeys=[];
+    const cacheKeys = [];
     const cacheKey = `${DM_INBOX_PREFIX}${sender}`;
-    const cacheKey2= `${DM_INBOX_PREFIX}${receiver}`;
+    const cacheKey2 = `${DM_INBOX_PREFIX}${receiver}`;
 
     const cacheDmKey = `${DM_CHAT_PREFIX}${sender}:${receiver}`;
     const cacheDmKey2 = `${DM_CHAT_PREFIX}${receiver}:${sender}`;
-   
 
-    
     let room = await DMRoom.findOne({ users: { $all: [sender, receiver] } });
     if (!room) {
       room = await DMRoom.create({
@@ -119,7 +115,6 @@ exports.create_dm_chat = async function (req, res) {
     }
 
     const updatedMedia = [];
-    
 
     if (req.files?.files) {
       for (let i = 0; i < media_files.length; i++) {
@@ -203,11 +198,8 @@ exports.create_dm_chat = async function (req, res) {
     }
     cacheKeys.push(cacheDmKey);
     cacheKeys.push(cacheDmKey2);
-   
-    await rabbitmqService.publishInvalidation(
-      cacheKeys,
-      'dm'
-    );
+
+    await rabbitmqService.publishInvalidation(cacheKeys, "dm");
     res.json({
       success: true,
       message: "Message sent successfully",
@@ -224,25 +216,25 @@ exports.create_dm_chat = async function (req, res) {
 };
 exports.create_brand_chat = async function (req, res) {
   const sender = res.locals.verified_user_id;
-  const { domain, content, replyTo, links } = req.body; 
+  const { username, content, replyTo, links } = req.body;
 
   const media_files = JSON.parse(req.body.media || "[]");
   const link_files = JSON.parse(links || "[]");
 
   try {
-    const receiverData = await Business.findOne({ domain: domain });
+    const receiverData = await User.findOne({ username: username });
     if (!receiverData) {
-      return res.status(404).json({
+      return res.json({
         success: false,
-        message: "Business not found",
+        message: "User not found",
       });
     }
-    
-    const receiver = receiverData.user_id;
+
+    const receiver = receiverData._id;
     const cacheKey = `${DM_INBOX_PREFIX}${sender}`;
     const cacheDmKey = `${DM_CHAT_PREFIX}${sender}:${receiver}`;
     const cacheDmKey2 = `${DM_CHAT_PREFIX}${receiver}:${sender}`;
-    
+
     let room = await DMRoom.findOne({ users: { $all: [sender, receiver] } });
     if (!room) {
       room = await DMRoom.create({
@@ -252,10 +244,7 @@ exports.create_brand_chat = async function (req, res) {
           [receiver]: null,
         },
       });
-      await rabbitmqService.publishInvalidation(
-        [cacheKey],
-        'dm'
-      );
+      await rabbitmqService.publishInvalidation([cacheKey], "dm");
     }
 
     const updatedMedia = [];
@@ -341,10 +330,7 @@ exports.create_brand_chat = async function (req, res) {
         .emit("dm_message", populatedMessage);
     }
 
-    await rabbitmqService.publishInvalidation(
-      [cacheDmKey, cacheDmKey2],
-      'dm'
-    );
+    await rabbitmqService.publishInvalidation([cacheDmKey, cacheDmKey2], "dm");
     res.json({
       success: true,
       message: "Message sent successfully",
@@ -475,7 +461,7 @@ exports.fetch_dm_chats = async function (req, res) {
         message: "Chat fetched successfully.",
         chats: cachedChat || cachedChat2,
       });
-    };
+    }
     const room = await DMRoom.findOne({
       users: { $all: [sender, receiver._id] },
     });
@@ -536,18 +522,18 @@ exports.fetch_brand_chats = async function (req, res) {
     const receiver = user_id;
     console.log(receiver);
     console.log(sender);
-    const cacheKey = `${DM_CHAT_PREFIX}${sender}:${receiver}`;  
+    const cacheKey = `${DM_CHAT_PREFIX}${sender}:${receiver}`;
     const cacheKey2 = `${DM_CHAT_PREFIX}${receiver}:${sender}`;
     const cachedChat = await redisService.getCache(cacheKey);
     const cachedChat2 = await redisService.getCache(cacheKey2);
     if (cachedChat || cachedChat2) {
-      return res.json({ 
+      return res.json({
         success: true,
         message: "Chat fetched successfully.",
         chats: cachedChat || cachedChat2,
       });
-    };
-    
+    }
+
     const room = await DMRoom.findOne({
       users: { $all: [sender, receiver] },
     });
@@ -584,8 +570,8 @@ exports.fetch_brand_chats = async function (req, res) {
 
     room.lastSeen.set(sender, new Date());
     await room.save();
-    await redisService.setCache(cacheKey, messages,3600);
-    await redisService.setCache(cacheKey2, messages,3600);
+    await redisService.setCache(cacheKey, messages, 3600);
+    await redisService.setCache(cacheKey2, messages, 3600);
     res.json({
       success: true,
       message: "Messages fetched successfully",
@@ -681,10 +667,7 @@ exports.toggle_dm_reaction = async function (req, res) {
     }
 
     await chat.save();
-    await rabbitmqService.publishInvalidation(
-      [cacheDmKey, cacheDmKey2],
-      'dm'
-    );
+    await rabbitmqService.publishInvalidation([cacheDmKey, cacheDmKey2], "dm");
     return res.status(200).json({
       success: true,
       message: reactionToggled ? "Reaction added" : "Reaction removed",
@@ -700,8 +683,6 @@ exports.toggle_dm_reaction = async function (req, res) {
     });
   }
 };
-
-
 
 exports.delete_dm_chat = async function (req, res) {
   const { id } = req.body;
@@ -736,10 +717,7 @@ exports.delete_dm_chat = async function (req, res) {
         roomId: dmRoom.toString(),
       });
     }
-    await rabbitmqService.publishInvalidation(
-      [cacheDmKey, cacheDmKey2],
-      'dm'
-    );
+    await rabbitmqService.publishInvalidation([cacheDmKey, cacheDmKey2], "dm");
 
     return res.status(200).json({
       success: true,
@@ -761,7 +739,7 @@ exports.mark_dm_last_seen = async (req, res) => {
   const { receiver } = req.body;
 
   try {
-    if(!receiver) {
+    if (!receiver) {
       return res.json({
         success: false,
         message: "Receiver is required",
@@ -772,14 +750,13 @@ exports.mark_dm_last_seen = async (req, res) => {
     const cacheDmKey2 = `${DM_CHAT_PREFIX}${receiver}:${userId}`;
     const room = await DMRoom.findOne({ users: { $all: [userId, receiver] } });
     if (!room)
-      return res
-        .json({ success: false, message: "DM room not found" });
+      return res.json({ success: false, message: "DM room not found" });
 
     room.lastSeen.set(userId.toString(), new Date());
     await room.save();
     await rabbitmqService.publishInvalidation(
       [cacheKey, cacheDmKey, cacheDmKey2],
-      'dm'
+      "dm"
     );
     res.json({ success: true, message: "Last seen updated" });
   } catch (error) {

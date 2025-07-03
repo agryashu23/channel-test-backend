@@ -19,7 +19,7 @@ const axios = require("axios");
 const sendEmail = require("../../coms/email/sendEmail");
 const ChannelMembership = mongoose.model("ChannelMembership");
 const TopicMembership = mongoose.model("TopicMembership");
-const {linkUserMemberships} = require("../../utils/linkMembership");
+const {linkUserMemberships, shiftUserToBusiness} = require("../../utils/linkMembership");
 
 const rabbitmqService = require("../services/rabbitmqService");
 const redisService = require("../services/redisService");
@@ -47,14 +47,14 @@ const USER_PREFIX = "user:";
 
 const TOPIC_PREFIX = "topic:";
 const TOPICS_ALL_CHANNEL_PREFIX = "topics:all:channel:";
-const TOPICS_MY_PREFIX = "topics:my:";
 const TOPICS_MEMBERS_PREFIX = "topics:members:";
-
+const TOPIC_MEMBERSHIP_PREFIX = "topic:membership:";
 
 const CHANNEL_PREFIX = "channel:";
-const CHANNELS_ALL_PREFIX = "channels:all:";
-const CHANNELS_MY_PREFIX = "channels:my:";
+const CHANNELS_CREATED_PREFIX = "channels:created:";
 const CHANNELS_MEMBERS_PREFIX = "channels:members:";
+const CHANNELS_MEMBERSHIP_PREFIX = "channels:membership:";
+const CHANNELS_MEMBERS_COUNT_PREFIX = "channels:members:count:";
 
 function getColorFromString(input = "") {
   if (!input) return colorPalette[0];
@@ -237,11 +237,12 @@ exports.check_domain_verification = async function (req, res) {
         message: "Domain format is incorrect.",
       });
     }
-    const existingBusiness = await Business.findOne({ domain: newDomain });
+    const [existingBusiness,alreadyBusiness] = await Promise.all([
+      Business.findOne({ domain: newDomain }).lean(),
+      Business.findOne({user_id:user_id}).lean()
+    ]);
     if (
-      existingBusiness &&
-      (existingBusiness.user_id.toString() !== user_id.toString() ||
-        existingBusiness.isVerified)
+      existingBusiness
     ) {
       return res.json({
         available: false,
@@ -252,22 +253,29 @@ exports.check_domain_verification = async function (req, res) {
 
     const result = await whois(newDomain);
 
-    if (!result || Object.keys(result).length === 0) {
+    if (!result || !result.domainName || Object.keys(result).length === 0) {
       return res.json({
-        sucess: false,
+        success: false,
         message: "Domain is invalid or cannot be verified.",
       });
     }
     const providerData = result.registrar ? result.registrar : null;
-    const business = new Business({
-      domain: newDomain,
-      user_id: user_id,
-      verificationToken: verificationToken,
-      provider: providerData,
-      type:"embed",
-    });
-
-    await business.save();
+    if(alreadyBusiness){
+      alreadyBusiness.domain = newDomain;
+      alreadyBusiness.verificationToken = verificationToken;
+      alreadyBusiness.provider = providerData;
+      alreadyBusiness.type="embed";
+      await alreadyBusiness.save();
+    }
+    else{
+      const business = new Business({
+        domain: newDomain,
+        user_id: user_id,
+        verificationToken: verificationToken,
+        provider: providerData,
+      });
+      await business.save();
+    }
     await rabbitmqService.publishInvalidation(
       [cacheVerifyKey],
       "embed"
@@ -313,7 +321,7 @@ exports.domain_verification_method = async function (req, res) {
     const user_id = res.locals.verified_user_id;
     const business = await Business.findOne({ user_id: user_id });
     const cacheKey = `${EMBED_VERIFY_PREFIX}${user_id}`;
-    const cacheKey2 = `${EMBED_API_PREFIX}${apiKey}:${domain}`;
+    const cacheKey2 = `${EMBED_API_PREFIX}${business.apiKey}:${business.domain}`;
     if (!business) {
       return res.json({ success: false, error: "Invalid User" });
     }
@@ -381,10 +389,12 @@ exports.domain_verification_method = async function (req, res) {
       });
     }
     business.isVerified = true;
+    business.type="embed";
     const apiKey = generateApiKey(business.domain, user_id);
     business.apiKey = apiKey;
     business.verificationMethod = verificationMethod;
     await business.save();
+    await shiftUserToBusiness(user_id,business._id);
     await rabbitmqService.publishInvalidation(
       [cacheKey,cacheKey2],
       "embed"
@@ -445,19 +455,21 @@ exports.auto_login = async function (req, res) {
       });
     }
     const normalizedEmail = email.toLowerCase().trim();
-    const cacheKey = `${EMBED_LOGIN_PREFIX}${normalizedEmail}:${domain}:${apiKey}:${channelName}`;
-    const cachedVal = await redisService.getCache(cacheKey);
-    if (cachedVal) {
-      return res.status(200).json(cachedVal);
-    }
-
+     const cacheKey = `${EMBED_LOGIN_PREFIX}:${autoLogin}:${normalizedEmail}:${domain}:${apiKey}:${channelName}:${topicName}`;
+     const cachedVal = await redisService.getCache(cacheKey);
+     if (cachedVal) {
+       return res.status(200).json(cachedVal);
+     }
     const business = await Business.findOne({ apiKey }).lean();
     if (!business || !business.isVerified) {
       return res.json({ success: false, error: "Invalid API key or domain is not verified." });
     }
+    let allowInTopic = false;
+    let responseMessage = "";
     let user = await User.findOne({ email: normalizedEmail });
-    
-    if (business.autoLogin && (autoLogin === true || autoLogin === "true")) {
+    let cacheKeys = [];
+    const isAutoLogin = business.autoLogin && (autoLogin === true || autoLogin === "true");
+    if (isAutoLogin) {
       if (!user) {
         const username = await usernameCreate(normalizedEmail);
         const assignedColor = getColorFromString(username);
@@ -475,6 +487,8 @@ exports.auto_login = async function (req, res) {
         }
         responseMessage = "Auto-logged in.";
       }
+      const cacheKeys2 = await linkUserMemberships(user);
+      cacheKeys.push(...cacheKeys2);
     } else {
       if (!user) {
         return res.json({
@@ -493,61 +507,87 @@ exports.auto_login = async function (req, res) {
       }
       responseMessage = "Logged in successfully.";
     }
-    const joinSelectedTopic=false;
-    const cacheKeys = await linkUserMemberships(user);
-    if(business.autoLogin && (autoLogin === true || autoLogin === "true")){
-      const channelData = await Channel.findOne({
-        name: channelName,
-        user: business.user_id,
-      }).populate({path:"topics",select:"_id name"}).lean();
-      if (!channelData) {
-        return res.json({ success: false, error: "Channel not found." });
-      }
-      const channelId = channelData?._id;
-      const channelMembership = await ChannelMembership.findOne({channel:channelId,user:user._id});
-      
-      if(business.loginControl === "direct"){
-        if (!channelMembership) {
-          await ChannelMembership.create({ channel: channelId, user: user._id, business: business._id,email:normalizedEmail, status: "joined" });
-        } else if (channelMembership.status === "request") {
-          await ChannelMembership.updateOne({ _id: channelMembership._id }, { status: "joined",user:user._id,business:business._id });
-        }
-        cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channelId}`);
-        const topicData = channelData.topics.find(t => t.name === topicName);
-        if (topicData) {
-          const topicMembership = await TopicMembership.findOne({ email: normalizedEmail, topic: topicData._id });
-          if (!topicMembership) {
-            await TopicMembership.create({user:user._id, email: normalizedEmail, topic: topicData._id, business: business._id, status: "joined" });
-            joinSelectedTopic = true;
-          } else if (topicMembership.status === "request") {
-            await TopicMembership.updateOne({ _id: topicMembership._id }, { status: "joined",user:user._id,business:business._id });
+
+    let channelData = null;
+    let topicData = null;
+    if(channelName){
+      channelData = await Channel.findOne({ business: business._id, name: channelName }).select("topics business visibility")
+      .populate({ path: "topics", select: "_id visibility" }).lean(); 
+    }
+    if(channelData && topicName){
+      topicData = await Topic.findOne({ channel: channelData._id, name: topicName }).lean();
+    }
+    const createPublicTopicMemberships = async (channelData) => {
+      const publicTopics = channelData.topics.filter(t => t.visibility === "anyone");
+      if (publicTopics.length) {
+        const bulkOps = publicTopics.map(t => ({
+          insertOne: {
+            document: {
+              topic: t._id,
+              user: user._id,
+              channel: channelData._id,
+              business: channelData.business || null,
+              email: user.email,
+              status: "joined",
+            }
           }
+        }));
+        await TopicMembership.bulkWrite(bulkOps);
+        const topicCacheKeys = publicTopics.map(t => `${TOPICS_MEMBERS_PREFIX}${t._id}`);
+        cacheKeys.push(...topicCacheKeys);
+      }
+    };
+
+    const ensureChannelJoin = async (channelData, mode) => {
+      if (!channelData) return;
+      const existingMembership = await ChannelMembership.findOne({ channel: channelData._id, user: user._id });
+        if (!existingMembership) {
+          await ChannelMembership.create({
+            channel: channelData._id, user: user._id, email: user.email,
+            business: business._id, status: "joined"
+          });
+          await createPublicTopicMemberships(channelData);
+          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channelData._id}`);
+        } else if (existingMembership.status === "request") {
+          await ChannelMembership.updateOne({ _id: existingMembership._id }, { $set: { status: "joined" } });
+          await createPublicTopicMemberships(channelData);
+          cacheKeys.push(`${CHANNELS_MEMBERSHIP_PREFIX}${channelData._id}:${user._id}`);
+          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channelData._id}`);
+        }
+    };
+
+    if (business.loginControl === "direct" && channelData) {
+      await ensureChannelJoin(channelData);
+      if (topicData) {
+        const alreadyIn = await TopicMembership.findOne({
+          topic: topicData._id,
+          user: user._id,
+          channel: channelData._id
+        });
+
+        if (!alreadyIn) {
+          await TopicMembership.create({
+            topic: topicData._id,
+            user: user._id,
+            channel: channelData._id,
+            business: business._id,
+            email: user.email,
+            status: "joined"
+          });
           cacheKeys.push(`${TOPICS_MEMBERS_PREFIX}${topicData._id}`);
         }
-      }
-      else{
-        if (!channelMembership) {
-          const status = channelData.visibility === "invite" ? "request" : "joined";
-          await ChannelMembership.create({ channel: channelId, user: user._id,email:normalizedEmail, business: business._id, status });
-          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channelId}`);
-        }
-        const topicData = channelData.topics.find(t => t.name === topicName);
-        if (topicData) {
-          const topicMembership = await TopicMembership.findOne({ email: normalizedEmail, topic: topicData._id });
-          if (!topicMembership) {
-            if (topicData.visibility === "anyone") {
-              await TopicMembership.create({user:user._id, email: normalizedEmail, topic: topicData._id, status: "joined",business:business._id });
-              joinSelectedTopic = true;
-            } else if (topicData.visibility === "invite") {
-              await TopicMembership.create({user:user._id, email: normalizedEmail, topic: topicData._id, status: "request",business:business._id });
-            }
-            cacheKeys.push(`${TOPICS_MEMBERS_PREFIX}${topicData._id}`);
-          }
-        }
+        allowInTopic = true;
       }
     }
-
-    await rabbitmqService.publishInvalidation(cacheKeys, "channel");
+    if (business.loginControl === "api" && channelData && topicData) {
+      const alreadyIn = await TopicMembership.findOne({
+        topic: topicData._id,
+        user: user._id,
+        channel: channelData._id
+      });
+      if (alreadyIn) allowInTopic = true;
+    }
+    
     const userData = {
       _id: user._id,
       name: user.name || null,
@@ -561,9 +601,11 @@ exports.auto_login = async function (req, res) {
       token: newToken,
       user: userData,
       message: responseMessage, 
-      joinTopic:joinSelectedTopic,
+      allowInTopic: allowInTopic,
     };
-
+    if (cacheKeys.length) {
+      await rabbitmqService.publishInvalidation(cacheKeys, "channel");
+    }
     await redisService.setCache(cacheKey, responseData, 1200);
     return res.status(200).json(responseData);
   } catch (error) {
@@ -591,50 +633,128 @@ exports.login_embed = async function (req, res) {
 
 exports.verify_login_embed = async function (req, res) {
   try {
-    const { email, domain, channel } = req.body;
+    const { email, domain, channel ,originalEmail,originalChannel,originalTopic } = req.body;
+    console.log(req.body);
     if (!email || !domain) {
-      return res.json({
-        success: false,
-        message: "Email and domain are required",
-      });
+      return res.json({ success: false, message: "Email and domain are required" });
     }
-
     const username = await usernameCreate(email);
     const assignedColor = getColorFromString(username);
-    let user = await User.findOne({ email });
+    let [user,business] = await Promise.all([
+      User.findOne({ email }),
+      Business.findOne({ domain:domain }).lean(),
+    ]);
+    if (!business) return res.json({ success: false, message: "Invalid API key" });
     const isNewUser = !user;
     if (isNewUser) {
-      user = new User({
-        email,
-        username,
-        color_logo: assignedColor,
-        verified_domains: [domain],
-      });
+      user = new User({ email, username, color_logo: assignedColor, verified_domains: [domain] });
     } else {
-      if (!Array.isArray(user.verified_domains)) user.verified_domains = [];
-      if (!user.verified_domains.includes(domain)) {
-        user.verified_domains.push(domain);
-      }
+      user.verified_domains = Array.isArray(user.verified_domains) ? user.verified_domains : [];
+      if (!user.verified_domains.includes(domain)) user.verified_domains.push(domain);
     }
     await user.save();
     const cacheKeys2 = await linkUserMemberships(user);
     const cacheKeys = [...cacheKeys2, `${USER_PREFIX}${user._id}`];
-    if(channel){
-      const channelMembership = await ChannelMembership.findOne({channel:channel,user:user._id,status:"joined"});
-      if(!channelMembership){
-        const channelData = await Channel.findById(channel);
-        if(channelData && channelData.visibility === "public"){
-          await ChannelMembership.create({channel:channel,user:user._id,email:user.email,business:channelData.business,status:"joined"});
-          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channel}`);
+
+    const createPublicTopicMemberships = async (channelData) => {
+      const publicTopics = channelData.topics.filter(t => t.visibility === "anyone");
+      if (publicTopics.length) {
+        const bulkOps = publicTopics.map(t => ({
+          insertOne: {
+            document: {
+              topic: t._id,
+              user: user._id,
+              channel: channelData._id,
+              business: channelData.business || null,
+              email: user.email,
+              status: "joined",
+            }
+          }
+        }));
+        await TopicMembership.bulkWrite(bulkOps);
+        const topicCacheKeys = publicTopics.map(t => `${TOPICS_MEMBERS_PREFIX}${t._id}`);
+        cacheKeys.push(...topicCacheKeys);
+      }
+    };
+
+    const ensureChannelJoin = async (channelId, mode) => {
+      const channelData = await Channel.findById(channelId).select("topics business visibility")
+        .populate({ path: "topics", select: "_id visibility" }).lean();
+      if (!channelData) return;
+
+      const existingMembership = await ChannelMembership.findOne({ channel: channelId, user: user._id });
+
+      if (mode === "api") {
+        if (channelData.visibility === "anyone") {
+          if (!existingMembership) {
+            await ChannelMembership.create({
+              channel: channelId, user: user._id, email: user.email,
+              business: business._id, status: "joined"
+            });
+            await createPublicTopicMemberships(channelData);
+          } else if (existingMembership.status === "request") {
+            await ChannelMembership.updateOne({ _id: existingMembership._id }, { $set: { status: "joined" } });
+            await createPublicTopicMemberships(channelData);
+            cacheKeys.push(`${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${user._id}`);
+          }
+        } else if (channelData.visibility === "invite" && !existingMembership) {
+          await ChannelMembership.create({
+            channel: channelId, user: user._id, email: user.email,
+            business: business._id, status: "request"
+          });
         }
-        else if(channelData && channelData.visibility === "invite"){
-          await ChannelMembership.create({channel:channel,user:user._id,email:user.email,business:channelData.business,status:"request"});
-          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channel}`);
+      } 
+      if (mode === "direct") {
+        if (!existingMembership) {
+          await ChannelMembership.create({
+            channel: channelId, user: user._id, email: user.email,
+            business: business._id, status: "joined"
+          });
+          await createPublicTopicMemberships(channelData);
+          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channelId}`);
+        } else if (existingMembership.status === "request") {
+          await ChannelMembership.updateOne({ _id: existingMembership._id }, { $set: { status: "joined" } });
+          await createPublicTopicMemberships(channelData);
+          cacheKeys.push(`${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${user._id}`);
+          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channelId}`);
+        }
+      }
+    };
+    console.log(business);
+    if (business.loginControl === "api" && channel) {
+      await ensureChannelJoin(channel, "api");
+    }
+
+    if (business.loginControl === "direct" && ((email && originalEmail && email === originalEmail) || !originalEmail)) {
+      if (originalChannel) await ensureChannelJoin(originalChannel, "direct");
+
+      if (channel && originalChannel !== channel) {
+        await ensureChannelJoin(channel, "api");
+      }
+      if (originalChannel && originalTopic) {
+        const topicExists = await Topic.findOne({ _id: originalTopic, channel: originalChannel, business: business._id });
+        if (topicExists) {
+          const alreadyIn = await TopicMembership.findOne({
+            topic: originalTopic, user: user._id, channel: originalChannel
+          });
+          if (!alreadyIn) {
+            await TopicMembership.create({
+              topic: originalTopic,
+              user: user._id,
+              channel: originalChannel,
+              business: business._id,
+              email: user.email,
+              status: "joined"
+            });
+            cacheKeys.push(`${TOPICS_MEMBERS_PREFIX}${originalTopic}`);
+          }
         }
       }
     }
+    if(business.loginControl === "direct" && originalEmail && email!==originalEmail){
+      await ensureChannelJoin(channel, "api");
+    }
     if (cacheKeys.length) {
-      await redisService.delCache(`${CHANNELS_MEMBERS_PREFIX}${channel}`);
       await rabbitmqService.publishInvalidation(cacheKeys, "channel");
     }
     const token = getUserToken({
@@ -649,7 +769,7 @@ exports.verify_login_embed = async function (req, res) {
       email: user.email,
       username: user.username,
       color_logo: user.color_logo,
-      verified_domains: user.verified_domains,
+      verified_domains: user.verified_domains, 
       business: user.business || null,
     };
 
@@ -671,7 +791,7 @@ exports.verify_login_embed = async function (req, res) {
 
 exports.embed_google_auth = async function (req, res) {
   try {
-    const { name = "", email, domain, channel } = req.body;
+    const { name = "", email, domain, channel ,originalChannel,originalTopic,originalEmail} = req.body;
     if (!email || !domain) {
       return res.json({
         success: false,
@@ -681,8 +801,11 @@ exports.embed_google_auth = async function (req, res) {
 
     const username = await usernameCreate(email);
     const assignedColor = getColorFromString(username);
-
-    let user = await User.findOne({ email });
+    let [user,business] = await Promise.all([
+      User.findOne({ email }),
+      Business.findOne({ domain:domain }).lean(),
+    ]);
+    if (!business) return res.json({ success: false, message: "Invalid API key" });
     let isNewUser = !user;
     if (!user) {
       user = new User({
@@ -701,40 +824,104 @@ exports.embed_google_auth = async function (req, res) {
     await user.save();
     const cacheKeys2 = await linkUserMemberships(user);
     const cacheKeys = [...cacheKeys2, `${USER_PREFIX}${user._id}`];
-    if(channel){
-      const channelMembership = await ChannelMembership.findOne({channel:channel,user:user._id,status:"joined"});
-      if(!channelMembership){
-        const channelData = await Channel.findById(channel).select("topics business visibility").populate({path:"topics",select:"_id name visibility"}).lean();
-        if(channelData && channelData.visibility === "public"){
-          await ChannelMembership.create({channel:channel,user:user._id,email:user.email,business:channelData.business,status:"joined"});
-          const publicTopics = channelData.topics.filter(t => t.visibility === "anyone");
-          const topicIds = publicTopics.map(t => t._id);
-          let topicMemberships = [];
-          if (topicIds.length) {
-            const bulkOps = topicIds.map(topicId => {
-              const membershipDoc = {
-                topic: topicId,
-                user: user._id,
-                channel: channelData._id,
-                business: channelData.business,
-                status: "joined",
-              };
-              topicMemberships.push(membershipDoc);
-              return { insertOne: { document: membershipDoc } };
-            });
-
-            await TopicMembership.bulkWrite(bulkOps);
-            const topicCacheKeys = topicIds.map(id => `${TOPICS_MEMBERS_PREFIX}${id}`);
-            cacheKeys.push(...topicCacheKeys);
+    const createPublicTopicMemberships = async (channelData) => {
+      const publicTopics = channelData.topics.filter(t => t.visibility === "anyone");
+      if (publicTopics.length) {
+        const bulkOps = publicTopics.map(t => ({
+          insertOne: {
+            document: {
+              topic: t._id,
+              user: user._id,
+              channel: channelData._id,
+              business: channelData.business || null,
+              email: user.email,
+              status: "joined",
+            }
           }
-          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channel}`);
+        }));
+        await TopicMembership.bulkWrite(bulkOps);
+        const topicCacheKeys = publicTopics.map(t => `${TOPICS_MEMBERS_PREFIX}${t._id}`);
+        cacheKeys.push(...topicCacheKeys);
+      }
+    };
+
+    const ensureChannelJoin = async (channelId, mode) => {
+      const channelData = await Channel.findById(channelId).select("topics business visibility")
+        .populate({ path: "topics", select: "_id visibility" }).lean();
+      if (!channelData) return;
+
+      const existingMembership = await ChannelMembership.findOne({ channel: channelId, user: user._id });
+
+      if (mode === "api") {
+        if (channelData.visibility === "anyone") {
+          if (!existingMembership) {
+            await ChannelMembership.create({
+              channel: channelId, user: user._id, email: user.email,
+              business: business._id, status: "joined"
+            });
+            await createPublicTopicMemberships(channelData);
+          } else if (existingMembership.status === "request") {
+            await ChannelMembership.updateOne({ _id: existingMembership._id }, { $set: { status: "joined" } });
+            await createPublicTopicMemberships(channelData);
+            cacheKeys.push(`${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${user._id}`);
+          }
+        } else if (channelData.visibility === "invite" && !existingMembership) {
+          await ChannelMembership.create({
+            channel: channelId, user: user._id, email: user.email,
+            business: business._id, status: "request"
+          });
         }
-        else if(channelData && channelData.visibility === "invite"){
-          await ChannelMembership.create({channel:channel,email:user.email, user:user._id,business:channelData.business,status:"request"});
-          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channel}`);
+      } 
+      if (mode === "direct") {
+        if (!existingMembership) {
+          await ChannelMembership.create({
+            channel: channelId, user: user._id, email: user.email,
+            business: business._id, status: "joined"
+          });
+          await createPublicTopicMemberships(channelData);
+          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channelId}`);
+        } else if (existingMembership.status === "request") {
+          await ChannelMembership.updateOne({ _id: existingMembership._id }, { $set: { status: "joined" } });
+          await createPublicTopicMemberships(channelData);
+          cacheKeys.push(`${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${user._id}`);
+          cacheKeys.push(`${CHANNELS_MEMBERS_PREFIX}${channelId}`);
+        }
+      }
+    };
+    if (business.loginControl === "api" && channel) {
+      await ensureChannelJoin(channel, "api");
+    }
+
+    if (business.loginControl === "direct" && ((email && originalEmail && email === originalEmail) || !originalEmail)) {
+      if (originalChannel) await ensureChannelJoin(originalChannel, "direct");
+
+      if (channel && originalChannel !== channel) {
+        await ensureChannelJoin(channel, "api");
+      }
+      if (originalChannel && originalTopic) {
+        const topicExists = await Topic.findOne({ _id: originalTopic, channel: originalChannel, business: business._id });
+        if (topicExists) {
+          const alreadyIn = await TopicMembership.findOne({
+            topic: originalTopic, user: user._id, channel: originalChannel
+          });
+          if (!alreadyIn) {
+            await TopicMembership.create({
+              topic: originalTopic,
+              user: user._id,
+              channel: originalChannel,
+              business: business._id,
+              email: user.email,
+              status: "joined"
+            });
+            cacheKeys.push(`${TOPICS_MEMBERS_PREFIX}${originalTopic}`);
+          }
         }
       }
     }
+    if(business.loginControl === "direct" && originalEmail && email!==originalEmail){
+      await ensureChannelJoin(channel, "api");
+    }
+    
     const user_data = {
       _id: user._id,
       name: user.name,
@@ -804,7 +991,7 @@ exports.generate_embed_data = async function (req, res) {
       return res.json({ error: "Api Key and domain are required" });
     }
 
-    const business = await Business.findOne({apiKey:apiKey}).populate({path:"user",select:"_id username"}).lean();
+    const business = await Business.findOne({apiKey:apiKey}).populate({path:"user_id",select:"_id username"}).lean();
     if(!business){
       return res.json({ error: "Invalid api key" });
     }
@@ -819,7 +1006,7 @@ exports.generate_embed_data = async function (req, res) {
       allChannels = await Channel.find({ business:business._id }).select("_id name business user").lean();
     }
     if (!allChannels.length) {
-      return res.json({ error: "No channels found" });
+      return res.json({success:false,message:"No channels found",error: "No channels found" });
     }
     const selectedChannelData =
       allChannels.find((ch) => ch.name === selectedChannel) || allChannels[0];
@@ -846,7 +1033,7 @@ exports.generate_embed_data = async function (req, res) {
       channels: allChannels,
       selectedChannel: selectedChannelId,
       selectedTopic: selectedTopicId,
-      username: business.user.username,
+      username: business.user_id.username,
       membership: topicMembership?true:false,
     };
     await redisService.setCache(cacheKey, responseData, 600);

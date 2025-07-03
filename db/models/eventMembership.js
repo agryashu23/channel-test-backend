@@ -12,7 +12,7 @@ const EventMembershipSchema = new Schema({
         default:"joined"
      },
     addedToCalendar: { type: Boolean, default: false },
-    joinedAt: { type: Date },
+    joinedAt: { type: Date, default: Date.now },
   });
 
 module.exports = mongoose.model("EventMembership", EventMembershipSchema);

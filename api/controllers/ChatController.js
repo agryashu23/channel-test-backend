@@ -7,9 +7,9 @@ var Event = mongoose.model("Event");
 var User = mongoose.model("User");
 var Business = mongoose.model("Business");
 var Channel = mongoose.model("Channel");
-const chatRabbitmqService = require('../services/chatRabbitmqService');
-const rabbitmqService = require('../services/rabbitmqService');
-const redisService = require('../services/redisService');
+const chatRabbitmqService = require("../services/chatRabbitmqService");
+const rabbitmqService = require("../services/rabbitmqService");
+const redisService = require("../services/redisService");
 
 const { v4: uuidv4 } = require("uuid");
 
@@ -23,18 +23,21 @@ const {
   uploadMultipleFiles,
 } = require("../aws/uploads/Images");
 
+const CHAT_TOPIC_PREFIX = "topic_chats:";
+const CHATS_PINNED_PREFIX = "topic_chats:pinned:";
 
-const CHAT_TOPIC_PREFIX = 'topic_chats:';
-const TOPIC_RESOURCE_PREFIX = 'topic:resource:';
-const TOPIC_REACTION_PREFIX = 'topic:reaction:';
+const TOPIC_RESOURCE_PREFIX = "topic:resource:";
+const TOPIC_REACTION_PREFIX = "topic:reaction:";
 
-const EVENT_PREFIX = 'event:';
-const TOPIC_EVENT_PREFIX = 'topic:event:';
+const EVENT_PREFIX = "event:";
+const TOPIC_EVENT_PREFIX = "topic:event:";
+const TOPIC_PREFIX = "topic:";
 
-const POLL_PREFIX = 'poll:';
-const TOPIC_POLL_PREFIX = 'topic:poll:';
+const POLL_PREFIX = "poll:";
+const TOPIC_POLL_PREFIX = "topic:poll:";
 
-const EVENT_SELECT_FIELDS = "_id name user joining startDate endDate startTime endTime locationText location paywallPrice paywall cover_image timezone type meet_url createdAt";
+const EVENT_SELECT_FIELDS =
+  "_id name user joining startDate endDate startTime endTime locationText location paywallPrice cover_image timezone type meet_url createdAt";
 
 exports.create_chat = async function (req, res) {
   const { channel, topic, content, replyTo, links } = req.body;
@@ -44,48 +47,81 @@ exports.create_chat = async function (req, res) {
   const link_files = JSON.parse(links);
 
   try {
-    const updatedMedia = [];
-    const topicData = await Topic.findById(topic);
-    if(!topicData){
-      return res.json({
-        success: false,
-        message: "Topic not found",
-      });
+    const topicCacheKey = `${TOPIC_PREFIX}${topic}`;
+    let topicData = null;
+    topicData = await redisService.getCache(topicCacheKey);
+    if (!topicData) {
+      topicData = await Topic.findById(topic).select("_id business").lean();
+      if (!topicData) {
+        return res.json({
+          success: false,
+          message: "Topic not found",
+        });
+      }
     }
-    if (req.files["files"]) {
-      for (let index = 0; index < media_files.length; index++) {
-        const mediaItem = media_files[index];
+    const updatedMedia = [];
+    if (req.files?.["files"]) {
+      const imageFiles = [],
+        videoFiles = [],
+        docFiles = [];
+      const fileMap = [];
+
+      media_files.forEach((mediaItem, index) => {
         const file = req.files["files"][index];
+        const { type } = mediaItem;
 
         if (!file) {
-          updatedMedia.push(mediaItem);
+          fileMap.push({ type, file: null });
+          return;
+        }
+
+        fileMap.push({ type, file });
+
+        if (type === "image") imageFiles.push(file);
+        else if (type === "video") videoFiles.push(file);
+        else if (type === "document") docFiles.push(file);
+      });
+
+      const [imageUploadResults, videoUploadResults, docUploadResults] =
+        await Promise.all([
+          uploadMultipleImagesChips(imageFiles, "chat_images"),
+          uploadMultipleVideos(videoFiles, "chat_videos"),
+          uploadMultipleFiles(docFiles, "chat_docs"),
+        ]);
+
+      const videoUrls = videoUploadResults.urls || [];
+      const videoThumbnails = videoUploadResults.thumbnails || [];
+
+      let imageIndex = 0,
+        videoIndex = 0,
+        docIndex = 0;
+
+      for (let i = 0; i < fileMap.length; i++) {
+        const { type, file } = fileMap[i];
+        if (!file) {
+          updatedMedia.push(media_files[i]);
           continue;
         }
 
-        let uploadedUrl = "";
-        let thumbnail = "";
-        const { type } = mediaItem;
+        let uploadedUrl = "",
+          thumbnail = "";
+
         if (type === "image") {
-          const [imageUrl] = await uploadMultipleImagesChips(
-            [file],
-            "chat_images"
-          );
-          uploadedUrl = imageUrl;
+          uploadedUrl = imageUploadResults[imageIndex++];
         } else if (type === "video") {
-          const { urls: videoUrls, thumbnails: videoThumbnails } =
-            await uploadMultipleVideos([file], "chat_videos");
-          uploadedUrl = videoUrls[0];
-          thumbnail = videoThumbnails[0];
+          uploadedUrl = videoUrls[videoIndex];
+          thumbnail = videoThumbnails[videoIndex];
+          videoIndex++;
         } else if (type === "document") {
-          const [docUrl] = await uploadMultipleFiles([file], "chat_docs");
-          uploadedUrl = docUrl;
+          uploadedUrl = docUploadResults[docIndex++];
         }
+
         updatedMedia.push({
           _id: new mongoose.Types.ObjectId(),
           name: file.originalname,
           url: uploadedUrl,
-          type: type,
-          thumbnail: thumbnail,
+          type,
+          thumbnail,
           size: file.size,
         });
       }
@@ -124,7 +160,7 @@ exports.create_chat = async function (req, res) {
     req.app.get("io").to(topic).emit("receive_message", updatedChat);
     await rabbitmqService.publishInvalidation(
       [`${CHAT_TOPIC_PREFIX}${topic}:latest`],
-      'chats',
+      "chats"
     );
     return res.json({
       success: true,
@@ -141,32 +177,33 @@ exports.create_chat = async function (req, res) {
   }
 };
 
- 
-
 exports.fetch_resource_chats = async function (req, res) {
   const { topicId } = req.body;
   const user_id = res.locals.verified_user_id;
   try {
-    if(!topicId || !user_id){
+    if (!topicId || !user_id) {
       return res.json({
         success: false,
         message: "Topic ID is required",
       });
     }
-      const cacheKey = `${TOPIC_RESOURCE_PREFIX}${topicId}`;
-      const cachedChats = await redisService.getCache(cacheKey);
-      if (cachedChats) {
-        return res.json(cachedChats);
-      }
-    const chats = await ChannelChat.find({ topic: topicId, media: { $elemMatch: { resource: true } } }).populate([
+    const cacheKey = `${TOPIC_RESOURCE_PREFIX}${topicId}`;
+    const cachedChats = await redisService.getCache(cacheKey);
+    if (cachedChats) {
+      return res.json(cachedChats);
+    }
+    const chats = await ChannelChat.find({
+      topic: topicId,
+      media: { $elemMatch: { resource: true } },
+    }).populate([
       { path: "user", select: "_id username name logo color_logo" },
-    ])
+    ]);
     const responseData = {
       success: true,
       message: "Chats fetched successfully",
-      chats:chats,
+      chats: chats,
     };
-     await redisService.setCache(cacheKey, responseData, 3600);
+    await redisService.setCache(cacheKey, responseData, 3600);
     return res.json(responseData);
   } catch (error) {
     console.error("Error fetching channel chats:", error);
@@ -178,12 +215,10 @@ exports.fetch_resource_chats = async function (req, res) {
   }
 };
 
-
 exports.delete_topic_chat = async function (req, res) {
   const { id } = req.body;
 
   try {
-    const cacheKeys=[`${CHAT_TOPIC_PREFIX}${chat.topic}:latest`];
     const chat = await ChannelChat.findByIdAndDelete(id);
     if (!chat) {
       return res.json({
@@ -191,23 +226,22 @@ exports.delete_topic_chat = async function (req, res) {
         message: "Chat not found",
       });
     }
-    if(chat.poll){
+    const cacheKeys = [`${CHAT_TOPIC_PREFIX}${chat.topic}:latest`];
+
+    if (chat.poll) {
       cacheKeys.push(`${POLL_PREFIX}${chat.poll}`);
       cacheKeys.push(`${TOPIC_POLL_PREFIX}${chat.poll}`);
       await Poll.findByIdAndDelete(chat.poll);
     }
-    if(chat.event){
+    if (chat.event) {
       cacheKeys.push(`${TOPIC_EVENT_PREFIX}${chat.event}`);
       cacheKeys.push(`${EVENT_PREFIX}${chat.event}`);
       await Event.findByIdAndDelete(chat.event);
     }
     const topicId = chat.topic;
     req.app.get("io").to(topicId).emit("chat_deleted", { topicId, chatId: id });
-   
-    await rabbitmqService.publishInvalidation(
-      cacheKeys,
-      'chats',
-    );
+
+    await rabbitmqService.publishInvalidation(cacheKeys, "chats");
     return res.json({
       success: true,
       message: "Chat deleted successfully",
@@ -226,9 +260,11 @@ exports.delete_topic_chat = async function (req, res) {
 exports.push_to_resource = async function (req, res) {
   const { chatId, mediaId } = req.body;
   const user_id = res.locals.verified_user_id;
- 
+
   try {
-    const chat = await ChannelChat.findOne({ _id: chatId});
+    const chat = await ChannelChat.findOne({ _id: chatId }).populate([
+      { path: "user", select: "_id username name logo color_logo" },
+    ]);
     if (!chat) {
       return res.json({
         success: false,
@@ -247,11 +283,8 @@ exports.push_to_resource = async function (req, res) {
     }
     mediaItem.resource = true;
     await chat.save();
-    await rabbitmqService.publishInvalidation(
-      [resourceKey],
-      'chats',
-    );
-   
+    await rabbitmqService.publishInvalidation([resourceKey], "chats");
+
     return res.json({
       success: true,
       message: "Pushed to resources",
@@ -292,10 +325,7 @@ exports.remove_from_resource = async function (req, res) {
     }
     mediaItem.resource = false;
     await chat.save();
-    await rabbitmqService.publishInvalidation(
-      [resourceKey],
-      'chats',
-    );
+    await rabbitmqService.publishInvalidation([resourceKey], "chats");
     return res.json({
       success: true,
       message: "Pushed to resources",
@@ -307,6 +337,129 @@ exports.remove_from_resource = async function (req, res) {
     return res.json({
       success: false,
       message: "Error pushing to resources",
+      error: error.message,
+    });
+  }
+};
+
+exports.pin_chat = async function (req, res) {
+  const { chatId } = req.body;
+  const user_id = res.locals.verified_user_id;
+
+  try {
+    if (!chatId || !user_id) {
+      return res.json({
+        success: false,
+        message: "Chat ID is required",
+      });
+    }
+    const chat = await ChannelChat.findOne({ _id: chatId });
+    if (!chat) {
+      return res.json({
+        success: false,
+        message: "Chat not found",
+      });
+    }
+    const pinKey = `${CHATS_PINNED_PREFIX}${chat.topic}`;
+    chat.pinned = chat.pinned ? !chat.pinned : true;
+    await chat.save();
+    await rabbitmqService.publishInvalidation([pinKey], "chats");
+    return res.json({
+      success: true,
+      message: "Chat pinned successfully",
+      chat: chat,
+    });
+  } catch (error) {
+    console.error("Error pinning chat:", error);
+    return res.json({
+      success: false,
+      message: "Error pinning chat",
+      error: error.message,
+    });
+  }
+};
+
+exports.unpin_chat = async function (req, res) {
+  const { chatId } = req.body;
+  const user_id = res.locals.verified_user_id;
+
+  try {
+    if (!chatId || !user_id) {
+      return res.json({
+        success: false,
+        message: "Chat ID is required",
+      });
+    }
+    const chat = await ChannelChat.findOne({ _id: chatId });
+    if (!chat) {
+      return res.json({
+        success: false,
+        message: "Chat not found",
+      });
+    }
+    const pinKey = `${CHATS_PINNED_PREFIX}${chat.topic}`;
+    chat.pinned = false;
+    await chat.save();
+    await rabbitmqService.publishInvalidation([pinKey], "chats");
+    return res.json({
+      success: true,
+      message: "Chat unpinned successfully",
+      chatId: chat._id,
+    });
+  } catch (error) {
+    console.error("Error unpinning chat:", error);
+    return res.json({
+      success: false,
+      message: "Error unpinning chat",
+      error: error.message,
+    });
+  }
+};
+
+exports.fetch_pinned_chats = async function (req, res) {
+  const { topicId } = req.body;
+  const user_id = res.locals.verified_user_id;
+
+  try {
+    if (!topicId || !user_id) {
+      return res.json({
+        success: false,
+        message: "Topic ID is required",
+      });
+    }
+    const pinKey = `${CHATS_PINNED_PREFIX}${topicId}`;
+    const cachedPinnedChats = await redisService.getCache(pinKey);
+    // if (cachedPinnedChats) {
+    //   return res.json({
+    //     success: true,
+    //     message: "Pinned chats fetched successfully",
+    //     chats: cachedPinnedChats,
+    //   });
+    // }
+    const chats = await ChannelChat.find({ topic: topicId, pinned: true })
+      .populate([
+        { path: "user", select: "_id username name logo color_logo" },
+        { path: "event", select: EVENT_SELECT_FIELDS },
+      ])
+      .lean();
+    if (!chats || chats.length === 0) {
+      return res.json({
+        success: true,
+        message: "No pinned chats found",
+        chats: [],
+      });
+    }
+    await redisService.setCache(pinKey, chats, 3600);
+    return res.json({
+      success: true,
+      message: "Pinned chats fetched successfully",
+      chats: chats,
+    });
+  } catch (error) {
+    console.error("Error fetching pinned chat:", error);
+    return res.json({
+      success: false,
+      message: "Error fetching pinned chats",
       error: error.message,
     });
   }
@@ -334,9 +487,9 @@ exports.fetch_topic_chats = async function (req, res) {
     let chatsData = null;
     let reactionsData = null;
 
-    // if (useCache) {
-    //   chatsData = await redisService.getCache(chatCacheKey);
-    // }
+    //  if (useCache) {
+    //    chatsData = await redisService.getCache(chatCacheKey);
+    //  }
 
     if (!chatsData) {
       const chats = await ChannelChat.find({ topic: topicId })
@@ -345,7 +498,14 @@ exports.fetch_topic_chats = async function (req, res) {
         .limit(parsedLimit)
         .populate([
           { path: "user", select: "_id username name logo color_logo" },
-          { path: "replyTo", select: "_id content media event poll" },
+          {
+            path: "replyTo",
+            select: "content media event poll user",
+            populate: {
+              path: "user",
+              select: "_id username name logo",
+            },
+          },
           { path: "event", select: EVENT_SELECT_FIELDS },
         ])
         .lean();
@@ -357,7 +517,7 @@ exports.fetch_topic_chats = async function (req, res) {
       };
 
       if (useCache) {
-        await redisService.setCache(chatCacheKey, chatsData, 3600); 
+        await redisService.setCache(chatCacheKey, chatsData, 3600);
       }
     }
 
@@ -366,14 +526,14 @@ exports.fetch_topic_chats = async function (req, res) {
     }
 
     if (!reactionsData) {
-      const chatIds = chatsData.chats.map(chat => chat._id);
+      const chatIds = chatsData.chats.map((chat) => chat._id);
 
       const reactionsRaw = await ChannelChat.find(
         { _id: { $in: chatIds } },
-        { _id: 1, topic:1, reactions: 1 }
+        { _id: 1, topic: 1, reactions: 1 }
       ).lean();
 
-      reactionsData = reactionsRaw.map(chat => ({
+      reactionsData = reactionsRaw.map((chat) => ({
         _id: chat._id,
         reactions: chat.reactions || [],
       }));
@@ -400,7 +560,6 @@ exports.fetch_topic_chats = async function (req, res) {
   }
 };
 
-
 exports.toggle_reaction = async function (req, res) {
   const { chatId, reaction } = req.body;
   const user_id = res.locals.verified_user_id;
@@ -421,14 +580,16 @@ exports.toggle_reaction = async function (req, res) {
     let existingReaction = chat.reactions.find((r) => r.type === reaction);
     if (existingReaction) {
       existingReaction.users.push(user_id);
+      reactionToggled = true;
     } else {
       chat.reactions.push({ type: reaction, users: [user_id] });
     }
     await chat.save();
     await rabbitmqService.publishInvalidation(
       [`${TOPIC_REACTION_PREFIX}${chat.topic}`],
-      'chats',
+      "chats"
     );
+    req.app.get("io").to(chat.topic.toString()).emit("receive_reaction", chat);
     return res.json({
       success: true,
       message: reactionToggled ? "Reaction added" : "Reaction removed",
@@ -444,6 +605,3 @@ exports.toggle_reaction = async function (req, res) {
     });
   }
 };
-
-
-

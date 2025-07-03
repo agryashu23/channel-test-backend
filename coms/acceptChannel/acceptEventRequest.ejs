@@ -125,24 +125,25 @@
           alt="Channels Logo"
           class="channel-logo"
         />
-       
       </div>
       <div class="content">
         <% if (logo) { %>
-          <img src="<%= logo %>" alt="<%= username %>'s logo" class="profile-picture" />
-        <% } else { %>
-          <img src="https://d3i6prk51rh5v9.cloudfront.net/channel_cover.png" alt="<%= username %>'s logo" class="profile-picture" />
-        <% } %>
-        <p><%= channelName %> has accepted your request.</p>
+            <img src="<%= logo %>" alt="<%= username %>'s logo" class="profile-picture" />
+          <% } else if (eventId) { %>
+            <img src="https://d3i6prk51rh5v9.cloudfront.net/event_cover.png" alt="<%= eventName %>" class="profile-picture" />
+          <% } else { %>
+            <img src="https://d3i6prk51rh5v9.cloudfront.net/channel_cover.png" alt="<%= username %>'s logo" class="profile-picture" />
+          <% } %>
+        <p>You are joined in  <%= eventName %> event. Click the button below to view the event.</p>
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="text-align: center; margin: 20px auto;">
           <tr>
             <td align="center">
               <a
-                href="https://channels.social/account/<%= username %>/channel/<%= channelId %>"
+                href="https://channels.social/event/<%= eventId %>"
                 class="button view-profile-button"
-                style="display: inline-block; padding: 10px 16px; border-radius: 25px; background-color: transparent; color: #ffffff; border: 1px solid #ffffff; text-decoration: none; font-size: 13px; font-weight: 400; margin: 0 10px;"
+                style="display: inline-block; padding: 10px 16px; border-radius: 25px; border: 1px solid #ffffff; background-color: transparent; color: #ffffff;  text-decoration: none; font-size: 13px; font-weight: 400; margin: 0 10px;"
               >
-                View Channel
+                View Event
               </a>
             </td>
           </tr>

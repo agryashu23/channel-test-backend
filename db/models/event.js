@@ -35,12 +35,8 @@ var EventSchema = new Schema(
       type: String,
       required: false,
     },
-    paywall: {
-      type: Boolean,
-      default: false,
-    },
     paywallPrice: {
-      type: String,
+      type: Number,
       required: false,
     },
     description: {
@@ -93,7 +89,7 @@ var EventSchema = new Schema(
     },
     joining: {
       type: String,
-      enum: ["public", "private"],
+      enum: ["public", "private","paid"],
       default: "public",
     },
   },

@@ -25,12 +25,9 @@ var ChannelSchema = new Schema(
         ref: "Topic",
       },
     ],
-    paywall: {
-      type: Boolean,
-      default: false,
-    },
+
     paywallPrice: {
-      type: String,
+      type: Number,
       required: false,
     },
     category: {
@@ -56,7 +53,7 @@ var ChannelSchema = new Schema(
     },
     visibility: {
       type: String,
-      enum: ["anyone", "invite"],
+      enum: ["anyone", "invite", "paid"],
       default: "anyone",
     },
   },

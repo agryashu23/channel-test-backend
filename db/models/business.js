@@ -52,13 +52,13 @@ var BusinessSchema = new Schema(
     },
     domain: {
       type: String,
-      required: true,
+      required: false,
       unique: true,
-      index: true,
     },
     current_subscription: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Payment",
+      required:false
     },
     verificationMethod: {
       type: String,
@@ -104,7 +104,10 @@ var BusinessSchema = new Schema(
       type: Boolean,
       default: false,
     },
-    parameters: ParameterSchema,
+    parameters: {
+      type: ParameterSchema,
+      default: () => ({})  
+    },
     apiData: [APISchema],
     filesData: [FileSchema],
   },

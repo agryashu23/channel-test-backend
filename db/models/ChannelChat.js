@@ -70,6 +70,14 @@ var ChannelChatSchema = new Schema(
       ref: "Topic",
       required: true,
     },
+    pinned: {
+      type: Boolean,
+      required: false,
+    },
+    pinnedAt: {
+      type: Date,
+      required: false,
+    },
     business: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",

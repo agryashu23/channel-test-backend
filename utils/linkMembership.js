@@ -1,9 +1,13 @@
 require("dotenv").config();
+const { Polly } = require("aws-sdk");
 var mongoose = require("mongoose");
 const ChannelMembership = mongoose.model("ChannelMembership");
 const TopicMembership = mongoose.model("TopicMembership");
 const Channel = mongoose.model("Channel");
 const Topic = mongoose.model("Topic");
+const User = mongoose.model("User");
+const Poll = mongoose.model("Poll");
+const ChannelChat = mongoose.model("ChannelChat");
 
 
 async function linkUserMemberships(user) {
@@ -260,8 +264,63 @@ async function linkUserMemberships(user) {
   }
 
 
+  async function shiftUserToBusiness(user_id, business_id) {
+    const user = await User.findByIdAndUpdate(
+      user_id,
+      { business: business_id },
+      { new: true }
+    ).select("email");
+  
+    const [channels, topics] = await Promise.all([
+      Channel.find({ user: user_id }).select("_id").lean(),
+      Topic.find({ user: user_id }).select("_id").lean(),
+    ]);
+    const channelIds = channels.map(c => c._id);
+    const topicIds = topics.map(t => t._id);
+    await Promise.all([
+      Channel.updateMany(
+        { _id: { $in: channelIds } },
+        { $set: { business: business_id } }
+      ),
+      Topic.updateMany(
+        { _id: { $in: topicIds } },
+        { $set: { business: business_id } }
+      ),
+      ChannelMembership.updateMany(
+        { channel: { $in: channelIds } },
+        { $set: { business: business_id } }
+      ),
+      TopicMembership.updateMany(
+        {
+          channel: { $in: channelIds },
+          topic: { $in: topicIds },
+        },
+        { $set: { business: business_id } }
+      ),
+      ChannelChat.updateMany(
+        { topic: { $in: topicIds } },
+        { $set: { business: business_id } }
+      ),
+      Poll.updateMany({ user: user_id }, { $set: { business: business_id } }),
+    ]);
+  
+    return {
+      success: true,
+      message: "User and all related entities shifted to business.",
+      stats: {
+        user: user.email,
+        channels: channelIds.length,
+        topics: topicIds.length,
+      }
+    };
+  }
+  
+
+
+
+
  
   
 
-  module.exports = {linkUserMemberships,syncMembershipsFromAdmin, preprocessMembershipRows, syncMembershipsFromAdminInitial};
+  module.exports = {linkUserMemberships,syncMembershipsFromAdmin, preprocessMembershipRows, syncMembershipsFromAdminInitial, shiftUserToBusiness};
   

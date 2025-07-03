@@ -15,7 +15,9 @@ var Event = mongoose.model("Event");
 var Poll = mongoose.model("Poll");
 const sendChannelRequest = require("../../coms/channelRequest/sendChannelRequest");
 const sendAcceptChannelRequest = require("../../coms/acceptChannel/sendAcceptChannelRequest");
+const chatRabbitmqService = require("../services/chatRabbitmqService");
 const rabbitmqService = require("../services/rabbitmqService");
+const emailRabbitmqService = require("../services/emailRabbitmqService");
 const linkUserMemberships = require("../../utils/linkMembership");
 const redisService = require("../services/redisService");
 
@@ -23,11 +25,12 @@ const redisService = require("../services/redisService");
 const CHANNEL_PREFIX = "channel:";
 const CHANNELS_CREATED_PREFIX = "channels:created:";
 const CHANNELS_MEMBERS_PREFIX = "channels:members:";
+const CHANNELS_MEMBERSHIP_PREFIX = "channels:membership:";
+const CHANNELS_MEMBERS_COUNT_PREFIX = "channels:members:count:";
 
 const TOPIC_PREFIX = "topic:";
 const TOPICS_MEMBERS_PREFIX = "topics:members:";
 const TOPICS_ALL_CHANNEL_PREFIX = "topics:all:channel:";
-
 
 const USER_PREFIX = "user:";
 
@@ -41,9 +44,6 @@ const {
   apiMetadata,
   apiMetadata2,
 } = require("../aws/uploads/Images");
-
-
-
 
 exports.check_channel_name = async function (req, res) {
   const { name } = req.body;
@@ -62,8 +62,15 @@ exports.check_channel_name = async function (req, res) {
 
 exports.create_channel = async function (req, res) {
   const user_id = res.locals.verified_user_id;
-  const { name, description, visibility, logo, cover_image, imageSource } =
-    req.body;
+  const {
+    name,
+    description,
+    visibility,
+    logo,
+    cover_image,
+    imageSource,
+    paywallPrice,
+  } = req.body;
 
   if (!user_id) {
     return res.json({
@@ -71,11 +78,10 @@ exports.create_channel = async function (req, res) {
       message: "User id is required.",
     });
   }
- 
 
   const user = await User.findById(user_id);
   const business_id = user.business;
-  let logoUrl = logo ||null;
+  let logoUrl = logo || null;
   if (req.files["logo"]) {
     const imageFile = req.files["logo"][0];
     logoUrl = await uploadSingleImageLogo(imageFile.buffer, "channelLogo");
@@ -98,21 +104,24 @@ exports.create_channel = async function (req, res) {
       description: description,
       visibility: visibility,
       business: business_id,
+      paywallPrice: paywallPrice,
     };
 
     let channel = await Channel.create(channel_data);
-    await ChannelMembership.create({
+    const myMembership = await ChannelMembership.create({
       channel: channel._id,
       user: user_id,
       role: "owner",
       email: user.email,
       status: "joined",
     });
-    await channel.populate([{path:"user",select:"name username _id logo color_logo"}]);
+    await channel.populate([
+      { path: "user", select: "name username _id logo color_logo" },
+    ]);
     const createdChannelsCacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
-   
-      await rabbitmqService.publishInvalidation(
-        [createdChannelsCacheKey],
+
+    await rabbitmqService.publishInvalidation(
+      [createdChannelsCacheKey],
       "channel"
     );
 
@@ -121,7 +130,7 @@ exports.create_channel = async function (req, res) {
       message: "Channel created",
       channel: {
         ...channel.toObject(),
-        members: [],
+        members: [myMembership] || [],
       },
     });
   } catch (error) {
@@ -131,8 +140,16 @@ exports.create_channel = async function (req, res) {
 
 exports.update_channel = async function (req, res) {
   const user_id = res.locals.verified_user_id;
-  const { _id, name, description, visibility, logo, cover_image, imageSource } =
-    req.body;
+  const {
+    _id,
+    name,
+    description,
+    visibility,
+    logo,
+    cover_image,
+    imageSource,
+    paywallPrice,
+  } = req.body;
 
   if (!user_id) {
     return res.status(400).json({
@@ -184,36 +201,39 @@ exports.update_channel = async function (req, res) {
       logo: logoUrl,
       business: business_id,
       cover_image: coverUrl,
+      paywallPrice: paywallPrice,
     };
 
     const updatedChannel = await Channel.findByIdAndUpdate(_id, updateData, {
       new: true,
     });
-    await updatedChannel.populate([{path:"user",select:"name username _id logo color_logo"}]);
+    await updatedChannel.populate([
+      { path: "user", select: "name username _id logo color_logo" },
+      { path: "topics", select: "name _id editability visibility" },
+    ]);
 
     await rabbitmqService.publishInvalidation(
       [createdChannelsCacheKey, channelCacheKey],
       "channel"
     );
-    let channelMembers = [];
-    const cacheKey = `${CHANNELS_MEMBERS_PREFIX}${_id}`;
-    cachedMembers = await redisService.getCache(cacheKey);
-    if (cachedMembers) {
-      channelMembers = cachedMembers;
-    }else{
-      channelMembers = await ChannelMembership.find({
+    let myMembership = null;
+    const cacheKey = `${CHANNELS_MEMBERSHIP_PREFIX}${_id}:${user_id}`;
+    myMembership = await redisService.getCache(cacheKey);
+    if (!myMembership) {
+      myMembership = await ChannelMembership.findOne({
         channel: _id,
-        user: { $ne: null },
-        role:{$ne:"owner"}
+        user: user_id,
       }).lean();
-      await redisService.setCache(cacheKey, channelMembers, 7200);
+      if (myMembership) {
+        await redisService.setCache(cacheKey, myMembership, 3600);
+      }
     }
     return res.json({
       success: true,
       message: "Channel updated successfully.",
       channel: {
         ...updatedChannel.toObject(),
-        members: channelMembers,
+        members: [myMembership] || [],
       },
     });
   } catch (error) {
@@ -240,17 +260,23 @@ exports.fetch_channel_members = async function (req, res, next) {
       return res.json({
         success: true,
         message: "Members fetched successfully from cache",
-        members: cachedMembers,
+        members: cachedMembers || [],
       });
     }
-    const channelMembers = await ChannelMembership.find({channel:channelId, user:{$ne:null}, status:"joined",role:{$ne:"owner"}}).
-    populate({path:"user",select:"name username _id logo color_logo"}).lean();
+    const channelMembers = await ChannelMembership.find({
+      channel: channelId,
+      user: { $ne: null },
+      status: "joined",
+      role: { $ne: "owner" },
+    })
+      .populate({ path: "user", select: "name username _id logo color_logo" })
+      .lean();
     await redisService.setCache(cacheKey, channelMembers, 7200);
-   
+
     res.json({
       success: true,
-      message: "Members fetched successfully" ,
-      members: channelMembers,
+      message: "Members fetched successfully",
+      members: channelMembers || [],
     });
   } catch (error) {
     console.error("Error in fetching members", error);
@@ -262,44 +288,26 @@ exports.fetch_channel_members = async function (req, res, next) {
   }
 };
 
-
-
 exports.removeChannelCover = async function (req, res) {
   const { channelId } = req.body;
   const user_id = res.locals.verified_user_id;
 
   try {
-    const channel = await Channel.findById(channelId).lean();
+    const channel = await Channel.findById(channelId);
     if (!channel || channel.user.toString() !== user_id) {
-      return res.json({ success: false, message: "Channel not found or user is unauthorized."});
+      return res.json({
+        success: false,
+        message: "Channel not found or user is unauthorized.",
+      });
     }
     channel.cover_image = "";
     await channel.save();
     const channelCacheKey = `${CHANNEL_PREFIX}${channelId}`;
-    await rabbitmqService.publishInvalidation(
-      [channelCacheKey],
-      "channel"
-    );
-    let channelMembers = [];
-    const cacheKey = `${CHANNELS_MEMBERS_PREFIX}${channelId}`;
-    cachedMembers = await redisService.getCache(cacheKey);
-    if (cachedMembers) {
-      channelMembers = cachedMembers;
-    }else{
-      channelMembers = await ChannelMembership.find({
-        channel: channelId,
-        user: { $ne: null },
-        role:{$ne:"owner"}
-      }).lean();
-      await redisService.setCache(cacheKey, channelMembers, 7200);
-    }
+    await rabbitmqService.publishInvalidation([channelCacheKey], "channel");
     return res.json({
       success: true,
       message: "Cover image removed successfully",
-      channel: {
-        ...channel,
-        members: channelMembers,
-      },
+      channel: channel,
     });
   } catch (error) {
     console.error("Error in removing cover image:", error);
@@ -312,9 +320,12 @@ exports.saveChannelCover = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const channelExist = await Channel.findById(channel).lean();
+    const channelExist = await Channel.findById(channel);
     if (!channelExist || channelExist.user.toString() !== user_id) {
-      return res.json({ success: false, message: "Channel not found or user is unauthorized." });
+      return res.json({
+        success: false,
+        message: "Channel not found or user is unauthorized.",
+      });
     }
     let cover_image = channelExist.cover_image || null;
     if (req.file) {
@@ -322,34 +333,15 @@ exports.saveChannelCover = async function (req, res) {
     }
     channelExist.cover_image = cover_image;
     await channelExist.save();
-    if(req.file){
+    if (req.file) {
       const channelCacheKey = `${CHANNEL_PREFIX}${channel}`;
-      const createdChannelsCacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
-      await rabbitmqService.publishInvalidation(
-        [channelCacheKey,createdChannelsCacheKey],
-        "channel"
-      );
+      await rabbitmqService.publishInvalidation([channelCacheKey], "channel");
     }
-    let channelMembers = [];
-    const cacheKey = `${CHANNELS_MEMBERS_PREFIX}${channelExist._id}`;
-    cachedMembers = await redisService.getCache(cacheKey);
-    if (cachedMembers) {
-      channelMembers = cachedMembers;
-    }else{
-      channelMembers = await ChannelMembership.find({
-        channel: channelExist._id,
-        user: { $ne: null },
-        role:{$ne:"owner"}
-      }).lean();
-      await redisService.setCache(cacheKey, channelMembers, 7200);
-    }
+
     return res.json({
       success: true,
       message: "Cover image updated successfully",
-      channel: {
-        ...channelExist,
-        members: channelMembers,
-      },
+      channel: channelExist,
     });
   } catch (error) {
     console.error("Error in changing cover image:", error);
@@ -361,10 +353,12 @@ exports.fetch_community_channel = async function (req, res) {
   const channelId = "678798aef9e3a667d5a5d1ea";
 
   try {
-    const channel = await Channel.findById(channelId).populate([
-      { path: "topics", select: "name _id editability visibility" },
-      { path: "user", select: "name username _id" },
-    ]).lean();
+    const channel = await Channel.findById(channelId)
+      .populate([
+        { path: "topics", select: "name _id editability visibility" },
+        { path: "user", select: "name username _id" },
+      ])
+      .lean();
     if (!channel) {
       return res.json({ success: false, message: "Channel not found" });
     }
@@ -373,11 +367,11 @@ exports.fetch_community_channel = async function (req, res) {
     cachedMembers = await redisService.getCache(cacheKey);
     if (cachedMembers) {
       channelMembers = cachedMembers;
-    }else{
+    } else {
       channelMembers = await ChannelMembership.find({
         channel: channelId,
         user: { $ne: null },
-        role:{$ne:"owner"}
+        role: { $ne: "owner" },
       }).lean();
       await redisService.setCache(cacheKey, channelMembers, 7200);
     }
@@ -386,7 +380,7 @@ exports.fetch_community_channel = async function (req, res) {
       message: "Channel fetched successfully",
       channel: {
         ...channel,
-        members: channelMembers,
+        members: channelMembers || [],
       },
     });
   } catch (error) {
@@ -397,22 +391,46 @@ exports.fetch_community_channel = async function (req, res) {
 
 exports.fetch_my_channels = async function (req, res, next) {
   const user_id = res.locals.verified_user_id;
-  try {
-    if (!user_id) {
-      return res.json({
-        success: false,
-        message: "User not found",
-      });
-    }
-    const createdChannelscacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
-    const [channelMemberships, topicMemberships, createdcachedChannels] = await Promise.all([
-      ChannelMembership.find({ user: user_id, status: "joined",role:{$ne:"owner"} }).select("channel").lean(),
-      TopicMembership.find({ user: user_id, status: "joined",role:{$ne:"owner"} }).select("topic channel").lean(),
-      redisService.getCache(createdChannelscacheKey),
-      // null
-    ]);
 
-    const channelIds = channelMemberships.map(entry => entry.channel);
+  if (!user_id) {
+    return res.status(401).json({
+      success: false,
+      message: "User not found",
+    });
+  }
+
+  try {
+    const createdChannelsCacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
+
+    const [channelMemberships, topicMemberships, cachedCreatedChannels] =
+      await Promise.all([
+        ChannelMembership.find({
+          user: user_id,
+          status: "joined",
+          role: { $ne: "owner" },
+        })
+          .select("channel role user")
+          .lean(),
+
+        TopicMembership.find({
+          user: user_id,
+          status: "joined",
+          role: { $ne: "owner" },
+        })
+          .select("topic channel")
+          .lean(),
+
+        redisService.getCache(createdChannelsCacheKey),
+      ]);
+
+    const channelIds = channelMemberships.map((entry) =>
+      entry.channel.toString()
+    );
+
+    const membershipMap = Object.fromEntries(
+      channelMemberships.map((m) => [m.channel.toString(), m])
+    );
+
     const topicMap = topicMemberships.reduce((acc, { topic, channel }) => {
       const chId = channel.toString();
       if (!acc[chId]) acc[chId] = new Set();
@@ -421,46 +439,51 @@ exports.fetch_my_channels = async function (req, res, next) {
     }, {});
 
     const joinedChannelsRaw = await Channel.find({ _id: { $in: channelIds } })
-      .populate([{ path: "topics", select: "name _id editability visibility" },{path:"user",select:"name username _id logo color_logo"}])
+      .populate([
+        { path: "topics", select: "name _id editability visibility" },
+        { path: "user", select: "name username _id logo color_logo" },
+      ])
       .lean();
 
-      const joinedChannels = joinedChannelsRaw.map(channel => {
-        const allowedTopicIds = topicMap[channel._id.toString()] || new Set();
-        const topicMapById = new Map(
-          (channel.topics || []).map(topic => [topic._id.toString(), topic])
-        );
-        const sortedFilteredTopics = (channel.topics || [])
-          .map(t => t._id.toString())
-          .filter(id => allowedTopicIds.has(id))
-          .map(id => topicMapById.get(id));
-      
-        return {
-          ...channel,
-          topics: sortedFilteredTopics,
-        };
-      });
-      
+    const joinedChannels = joinedChannelsRaw.map((channel) => {
+      const chId = channel._id.toString();
+      const allowedTopicIds = topicMap[chId] || new Set();
 
-    if (createdcachedChannels) {
-      return res.json({
-        success: true,
-        message: "Channels fetched successfully from cache",
-        channels: [...createdcachedChannels, ...joinedChannels],
-      });
+      const topicMapById = new Map(
+        (channel.topics || []).map((t) => [t._id.toString(), t])
+      );
+
+      const filteredTopics = Array.from(allowedTopicIds)
+        .map((id) => topicMapById.get(id))
+        .filter(Boolean); // ignore missing topics
+
+      return {
+        ...channel,
+        topics: filteredTopics,
+        membership: membershipMap[chId] || null,
+      };
+    });
+    let createdChannels = cachedCreatedChannels;
+    if (!cachedCreatedChannels) {
+      createdChannels = await Channel.find({ user: user_id })
+        .populate([
+          { path: "topics", select: "name _id editability visibility" },
+          { path: "user", select: "name username _id logo color_logo" },
+        ])
+        .lean();
+
+      await redisService.setCache(
+        createdChannelsCacheKey,
+        createdChannels,
+        7200
+      );
     }
 
-    const createdChannels = await Channel.find({ user: user_id })
-      .populate([{ path: "topics", select: "name _id editability visibility" },{path:"user",select:"name username _id logo color_logo"}])
-      .lean();
-
-    await redisService.setCache(createdChannelscacheKey, createdChannels, 7200);
-
-    res.json({
+    return res.json({
       success: true,
       message: "Channels fetched successfully",
       channels: [...createdChannels, ...joinedChannels],
     });
-
   } catch (error) {
     console.error("Error in fetching channels:", error);
     res.status(500).json({
@@ -472,66 +495,69 @@ exports.fetch_my_channels = async function (req, res, next) {
 };
 
 exports.fetch_channels = async function (req, res, next) {
-  const { username } = req.body;
+  const { username, user_id } = req.body;
 
   try {
-    const user = await User.findOne({ username: username });
+    if (!username) {
+      return res.json({
+        success: false,
+        message: "Username is required",
+      });
+    }
+    const user = await User.findOne({ username }).lean();
+    if (!user) {
+      return res.json({
+        success: false,
+        message: "Owner user not found",
+      });
+    }
+
     const cacheKey = `${CHANNELS_CREATED_PREFIX}${user._id}`;
     const cachedChannels = await redisService.getCache(cacheKey);
-    // const cachedChannels = null;
-    if (cachedChannels) {
-      const channelMembers = await ChannelMembership.find({channel:{$in:cachedChannels.map(channel=>channel._id)},user:{$ne:null},role:{$ne:"owner"}}).lean();
-      const channelMembersMap = new Map();
-      channelMembers.forEach(member => {
-      const channelId = member.channel.toString(); 
-      if (!channelMembersMap.has(channelId)) {
-        channelMembersMap.set(channelId, []);
-      }
-      channelMembersMap.get(channelId).push(member);
-    });
-      return res.json({
-        success: true,
-        message: "Channels fetched successfully from cachef",
-        channels: cachedChannels.map(channel=>({
-          ...channel,
-          members: channelMembersMap.get(channel._id.toString()) || [],
-        })),
-      });
-    }
-    const channels = await Channel.find({ user: user._id }).populate([
-      { path: "topics", select: "name _id editability visibility" },
-      { path: "user", select: "name username _id logo color_logo" },
-    ]).lean();
-    const channelMembers = await ChannelMembership.find({channel:{$in:channels.map(channel=>channel._id)},user:{$ne:null},role:{$ne:"owner"}}).lean();
-    const channelMembersMap = new Map();
-    channelMembers.forEach(member => {
-      const channelId = member.channel.toString(); 
-      if (!channelMembersMap.has(channelId)) {
-        channelMembersMap.set(channelId, []);
-      }
-      channelMembersMap.get(channelId).push(member);
-    });
-    
-    if (channels.length > 0) {  
-      const channelsWithMembers = channels.map(channel => ({
-        ...channel,
-        members: channelMembersMap.get(channel._id.toString()) || [],
-      }));
+
+    const channels =
+      cachedChannels ||
+      (await Channel.find({ user: user._id })
+        .populate([
+          { path: "topics", select: "name _id editability visibility" },
+          { path: "user", select: "name username _id logo color_logo" },
+        ])
+        .lean());
+
+    if (!cachedChannels) {
       await redisService.setCache(cacheKey, channels, 7200);
-      return res.json({
-        success: true,
-        message: "Channels fetched successfully",
-        channels: channelsWithMembers,
-      });
     }
-    res.json({
+
+    let membershipMap = new Map();
+
+    if (user_id && mongoose.Types.ObjectId.isValid(user_id)) {
+      const channelIds = channels.map((ch) => ch._id);
+      const memberships = await ChannelMembership.find({
+        channel: { $in: channelIds },
+        user: user_id,
+      }).lean();
+
+      membershipMap = new Map(
+        memberships.map((m) => [m.channel.toString(), m])
+      );
+    }
+
+    const enrichedChannels = channels.map((channel) => {
+      const chId = channel._id.toString();
+      return {
+        ...channel,
+        members: [membershipMap.get(chId)] || [],
+      };
+    });
+
+    return res.json({
       success: true,
-      message: "No Channels found",
-      channels: [],
+      message: "Channels fetched successfully",
+      channels: enrichedChannels,
     });
   } catch (error) {
-    console.error("Error in fetching channels", error);
-    res.status(500).json({
+    console.error("Error in fetching channels:", error);
+    return res.status(500).json({
       success: false,
       message: "Error in fetching channels",
       error: error.message,
@@ -540,38 +566,61 @@ exports.fetch_channels = async function (req, res, next) {
 };
 
 exports.fetch_channel = async function (req, res, next) {
-  const { id } = req.body;
+  const { id, user_id } = req.body;
 
   if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-    return res.status(400).json({
+    return res.json({
       success: false,
       message: "Invalid Channel ID",
     });
   }
+
   try {
     const cacheKey = `${CHANNEL_PREFIX}${id}`;
-    const cacheChannelMembersKey = `${CHANNELS_MEMBERS_PREFIX}${id}`;
-    const [cachedChannel, cachedChannelMembers] = await Promise.all([
-      redisService.getCache(cacheKey),
-      redisService.getCache(cacheChannelMembersKey),
-      // null,
-      // null
-    ]);
-    let members = cachedChannelMembers;
-    if (!cachedChannelMembers) {
-      members = await ChannelMembership.find({ channel: id, user: { $ne: null },role:{$ne:"owner"} }).lean();
-      await redisService.setCache(cacheChannelMembersKey, members, 3600);
+    const memberCountKey = `${CHANNELS_MEMBERS_COUNT_PREFIX}${id}`;
+    const membershipKey = `${CHANNELS_MEMBERSHIP_PREFIX}${id}:${user_id}`;
+
+    const [cachedChannel, cachedMemberCount, cachedMembership] =
+      await Promise.all([
+        redisService.getCache(cacheKey),
+        redisService.getCache(memberCountKey),
+        user_id && mongoose.Types.ObjectId.isValid(user_id)
+          ? redisService.getCache(membershipKey)
+          : null,
+      ]);
+
+    let myMembership = cachedMembership;
+    if (!myMembership && user_id && mongoose.Types.ObjectId.isValid(user_id)) {
+      myMembership = await ChannelMembership.findOne({
+        channel: id,
+        user: user_id,
+      }).lean();
+      if (myMembership) {
+        await redisService.setCache(membershipKey, myMembership, 3600);
+      }
     }
+    let memberCount = cachedMemberCount;
+    if (memberCount === null || memberCount === undefined) {
+      memberCount = await ChannelMembership.countDocuments({
+        channel: id,
+        status: "joined",
+        user: { $ne: null },
+      });
+      await redisService.setCache(memberCountKey, memberCount, 3600);
+    }
+
     if (cachedChannel) {
       return res.json({
         success: true,
         message: "Channel fetched successfully from cache",
         channel: {
           ...cachedChannel,
-          members,
+          members: [myMembership] || [],
+          memberCount: memberCount || 0,
         },
       });
     }
+
     const channel = await Channel.findById(id)
       .populate([
         { path: "topics", select: "name _id editability visibility" },
@@ -580,18 +629,21 @@ exports.fetch_channel = async function (req, res, next) {
       .lean();
 
     if (!channel) {
-      return res.json({
+      return res.status(404).json({
         success: false,
         message: "No Channel found",
       });
     }
+
     await redisService.setCache(cacheKey, channel, 3600);
+
     return res.json({
       success: true,
       message: "Channel fetched successfully",
       channel: {
         ...channel,
-        members,
+        members: [myMembership] || [],
+        memberCount: memberCount || 0,
       },
     });
   } catch (error) {
@@ -603,7 +655,6 @@ exports.fetch_channel = async function (req, res, next) {
     });
   }
 };
-
 
 exports.delete_channel = async function (req, res, next) {
   const { id } = req.body;
@@ -636,21 +687,27 @@ exports.delete_channel = async function (req, res, next) {
       Poll.deleteMany({ topic: { $in: allTopics } }),
       Summary.deleteMany({ topic: { $in: allTopics } }),
     ]);
-    const topicInvalidationPatterns = allTopics.map(topicId => [
-      `${TOPIC_PREFIX}${topicId}`,
-      `${TOPICS_MEMBERS_PREFIX}${topicId}`,
-    ]).flat();
-    
-   
+    const topicInvalidationPatterns = allTopics
+      .map((topicId) => [
+        `${TOPIC_PREFIX}${topicId}`,
+        `${TOPICS_MEMBERS_PREFIX}${topicId}`,
+      ])
+      .flat();
+
     const cacheKeys = [
       `${CHANNEL_PREFIX}${id}`,
       `${CHANNELS_CREATED_PREFIX}${user_id}`,
       `${CHANNELS_MEMBERS_PREFIX}${id}`,
       `${TOPICS_ALL_CHANNEL_PREFIX}${id}`,
+      `${CHANNELS_MEMBERS_COUNT_PREFIX}${id}`,
       ...topicInvalidationPatterns,
     ];
-
     await rabbitmqService.publishInvalidation(cacheKeys, "channel");
+    await chatRabbitmqService.publishInvalidation(
+      [`${CHANNELS_MEMBERSHIP_PREFIX}${id}:*`],
+      "channel",
+      "cache.delete.channel"
+    );
     return res.json({
       success: true,
       message: "Channel deleted successfully",
@@ -671,26 +728,44 @@ exports.join_channel = async function (req, res, next) {
   const { channelId } = req.body;
 
   try {
-    const channel = await Channel.findById(channelId).populate([{path:"topics",select:"name _id editability visibility"},
-      {path:"user",select:"name username _id logo color_logo"}]).lean();
+    const cacheKey = `${CHANNEL_PREFIX}${channelId}`;
+    let channel = null;
+    const cachedChannel = await redisService.getCache(cacheKey);
+    // const cachedChannel = null;
+    if (cachedChannel) {
+      channel = cachedChannel;
+    } else {
+      channel = await Channel.findById(channelId)
+        .populate([
+          { path: "topics", select: "name _id editability visibility" },
+          { path: "user", select: "name username _id logo color_logo" },
+        ])
+        .lean();
+      await redisService.setCache(cacheKey, channel, 3600);
+    }
     if (!channel) {
       return res.json({ success: false, message: "Channel not found." });
     }
     const user = await User.findById(user_id).select("email").lean();
 
-    const existing = await ChannelMembership.findOne({ channel: channelId, user: user_id });
+    const existing = await ChannelMembership.findOne({
+      channel: channelId,
+      user: user_id,
+    });
     if (existing) {
       if (existing.status === "joined") {
         const allTopicsJoined = await TopicMembership.find({
           channel: channelId,
           user: user_id,
           status: "joined",
-        }).select("topic").lean();
+        })
+          .select("topic")
+          .lean();
 
         return res.json({
           success: true,
           message: "You are already a member of this channel",
-          topics: allTopicsJoined.map(t => t.topic),
+          topics: allTopicsJoined.map((t) => t.topic),
           channel,
           membership: existing,
           joined: true,
@@ -703,7 +778,18 @@ exports.join_channel = async function (req, res, next) {
         joined: false,
       });
     }
-
+    if (channel.visibility === "paid" && channel.paywallPrice > 0) {
+      return res.json({
+        success: true,
+        message:
+          "This channel is paywalled. Please purchase the channel to join.",
+        paywall: true,
+        paywallPrice: channel.paywallPrice,
+        channel: channel,
+        membership: null,
+        joined: false,
+      });
+    }
     if (channel.visibility === "anyone") {
       const membership = await ChannelMembership.create({
         channel: channelId,
@@ -713,11 +799,13 @@ exports.join_channel = async function (req, res, next) {
         status: "joined",
       });
 
-      const publicTopics = channel.topics.filter(t => t.visibility === "anyone");
-      const topicIds = publicTopics.map(t => t._id);
+      const publicTopics = channel.topics.filter(
+        (t) => t.visibility === "anyone"
+      );
+      const topicIds = publicTopics.map((t) => t._id);
       let topicMemberships = [];
       if (topicIds.length) {
-        const bulkOps = topicIds.map(topicId => {
+        const bulkOps = topicIds.map((topicId) => {
           const membershipDoc = {
             topic: topicId,
             user: user_id,
@@ -731,9 +819,16 @@ exports.join_channel = async function (req, res, next) {
         });
 
         await TopicMembership.bulkWrite(bulkOps);
-        const topicCacheKeys = topicIds.map(id => `${TOPICS_MEMBERS_PREFIX}${id}`);
+        const topicCacheKeys = topicIds.map(
+          (id) => `${TOPICS_MEMBERS_PREFIX}${id}`
+        );
         await rabbitmqService.publishInvalidation(
-          [ `${CHANNELS_MEMBERS_PREFIX}${channel._id}`, ...topicCacheKeys ],
+          [
+            `${CHANNELS_MEMBERS_PREFIX}${channel._id}`,
+            `${CHANNELS_MEMBERSHIP_PREFIX}${channel._id}:${user_id}`,
+            `${CHANNELS_MEMBERS_COUNT_PREFIX}${channel._id}`,
+            ...topicCacheKeys,
+          ],
           "channel"
         );
       }
@@ -744,7 +839,7 @@ exports.join_channel = async function (req, res, next) {
           ...channel,
           topics: publicTopics,
         },
-        topics:topicIds,
+        topics: topicIds,
         membership: membership,
         joined: true,
         joinStatus: "first",
@@ -761,7 +856,7 @@ exports.join_channel = async function (req, res, next) {
       });
 
       await rabbitmqService.publishInvalidation(
-        [ `${CHANNELS_MEMBERS_PREFIX}${channel._id}` ],
+        [`${CHANNELS_MEMBERSHIP_PREFIX}${channel._id}:${user_id}`],
         "channel"
       );
 
@@ -779,7 +874,6 @@ exports.join_channel = async function (req, res, next) {
       success: false,
       message: "Can't join private channel. Contact administrator for access",
     });
-
   } catch (error) {
     console.error("Error in joining channel:", error);
     return res.json({
@@ -790,11 +884,9 @@ exports.join_channel = async function (req, res, next) {
   }
 };
 
-
 exports.leave_channel = async function (req, res, next) {
   const user_id = res.locals.verified_user_id;
   const { channelId } = req.body;
-
   if (!user_id || !channelId) {
     return res.json({
       success: false,
@@ -802,7 +894,9 @@ exports.leave_channel = async function (req, res, next) {
     });
   }
   try {
-    const channel = await Channel.findById(channelId).populate([{path:"user",select:"name username _id logo color_logo"}]).lean();
+    const channel = await Channel.findById(channelId)
+      .populate([{ path: "user", select: "name username _id logo color_logo" }])
+      .lean();
     if (!channel) {
       return res.json({
         success: false,
@@ -811,24 +905,26 @@ exports.leave_channel = async function (req, res, next) {
     }
     const topicIds = channel.topics || [];
 
-    const topicMemberships = await TopicMembership.find({ channel: channelId, user: user_id });
-    const [membership,abcd] = await Promise.all([
+    const topicMemberships = await TopicMembership.find({
+      channel: channelId,
+      user: user_id,
+    }).lean();
+    const [membership, abcd] = await Promise.all([
       ChannelMembership.findOneAndDelete({ channel: channelId, user: user_id }),
       TopicMembership.deleteMany({ channel: channelId, user: user_id }),
     ]);
     const topicMemberCacheKeys = topicIds.map(
-      topicId => `${TOPICS_MEMBERS_PREFIX}${topicId}`
+      (topicId) => `${TOPICS_MEMBERS_PREFIX}${topicId}`
     );
     const topicCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${channelId}`;
     const cacheKeys = [
+      `${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${user_id}`,
+      `${CHANNELS_MEMBERS_COUNT_PREFIX}${channelId}`,
       `${CHANNELS_MEMBERS_PREFIX}${channelId}`,
       ...topicMemberCacheKeys,
       topicCacheKey,
     ];
-    await rabbitmqService.publishInvalidation(
-      cacheKeys,
-      "channel"
-    );
+    await rabbitmqService.publishInvalidation(cacheKeys, "channel");
     return res.json({
       success: true,
       channel: channel,
@@ -846,94 +942,55 @@ exports.leave_channel = async function (req, res, next) {
   }
 };
 
-
-exports.join_channel_invite = async function (req, res) {
-  const user_id = res.locals.verified_user_id;
-  const { channelId, code } = req.body;
-
-  try {
-    const channel = await Channel.findById(channelId);
-    if (!channel) {
-      return res.json({
-        success: false,
-        message: "Channel not found.",
-      });
-    }
-    const user = await User.findById(user_id).select("email").lean();
-    const alreadyExists = await ChannelMembership.findOne({channel:channelId,user:user_id});
-    if(alreadyExists){
-      return res.json({
-        success: true,
-        message: "You are already a member of this channel.",
-        channel: channel,
-      });
-    }
-    const invite = await Invite.findOne({ channel: channelId, code: code });
-    if (
-      !invite ||
-      invite.user.toString() !== channel.user.toString()
-    ) {
-      return res.json({
-        success: false,
-        message: "Unauthorized invite code.",
-      });
-    }
-    if(invite.status==="expired" || ( invite.expire_time && invite.expire_time < new Date())){
-      return res.json({
-        success: false,
-        message: "Invite code expired.",
-      });
-    }
-      invite.used_by.push(user_id);
-      await invite.save();
-    const channelmembership = await ChannelMembership.create({channel:channelId,user:user_id,business:channel.business,email:user.email, status:"joined"}).lean();
-    const membersCacheKey = `${CHANNELS_MEMBERS_PREFIX}${channelId}`;
-    await rabbitmqService.publishInvalidation(
-      [
-        membersCacheKey,
-      ],
-      "channel"
-    );
-
-    return res.json({
-      success: true,
-      message: "Channel joined successfully.",
-      channel: channel,
-      membership: channelmembership,
-    });
-  } catch (error) {
-    return res.json({
-      success: false,
-      message: "Failed to join invite.",
-      error: error.message,
-    });
-  }
-};
-
-
 exports.accept_channel_request = async function (req, res, next) {
-  const { channelId, userId } = req.query;
+  const { channelId, userId, email } = req.body;
   const user_id = res.locals.verified_user_id;
-
+  console.log(email);
   try {
-    const channel = await Channel.findById(channelId);
-    if (!channel || channel.user.toString() !== user_id.toString()) {
+    const channel = await Channel.findById(channelId)
+      .select("user _id logo name")
+      .populate([{ path: "user", select: "_id username" }])
+      .lean();
+    if (!channel || channel.user._id.toString() !== user_id.toString()) {
       return res.json({
         success: false,
         message: "No channel found or you are not the owner.",
       });
     }
-    const membership = await ChannelMembership.findOneAndUpdate({channel:channelId,user:userId,status:"request"},{status:"joined"},{new:true}).lean();
+    await ChannelMembership.findOneAndUpdate(
+      { channel: channelId, user: userId, status: "request" },
+      { status: "joined" },
+      { new: true }
+    ).lean();
     const membersCacheKey = `${CHANNELS_MEMBERS_PREFIX}${channelId}`;
     await rabbitmqService.publishInvalidation(
-      [membersCacheKey],
+      [
+        membersCacheKey,
+        `${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${user_id}`,
+        `${CHANNELS_MEMBERS_COUNT_PREFIX}${channelId}`,
+      ],
       "channel"
     );
+    if (email && email !== "") {
+      await emailRabbitmqService.sendEmailMessage({
+        to: email,
+        channelId: channelId,
+        channelName: channel.name,
+        username: channel.user.username,
+        logo:
+          channel.logo ||
+          "https://d3i6prk51rh5v9.cloudfront.net/channel_cover.png",
+        topicId: "",
+        topicName: "",
+        eventId: "",
+        eventName: "",
+      });
+    }
     return res.json({
       success: true,
       message: "Channel joined successfully.",
-      channel: channel,
-      membership: membership,
+      channelId: channelId,
+      userId: userId,
     });
   } catch (error) {
     console.error("Error in joining channel:", error);
@@ -946,33 +1003,35 @@ exports.accept_channel_request = async function (req, res, next) {
 };
 
 exports.decline_channel_request = async function (req, res, next) {
-  const { channelId, userId } = req.query;
+  const { channelId, userId } = req.body;
   const user_id = res.locals.verified_user_id;
 
   try {
-    const channel = await Channel.findById(channelId);
+    const channel = await Channel.findById(channelId).select("user _id").lean();
     if (!channel || channel.user.toString() !== user_id.toString()) {
       return res.json({
         success: false,
         message: "No channel found or you are not the owner.",
       });
     }
-    const existingRequest = await ChannelMembership.findOne({channel:channelId,user:userId,status:"request"});
-    if(existingRequest){
+    const existingRequest = await ChannelMembership.findOne({
+      channel: channelId,
+      user: userId,
+      status: "request",
+    });
+    if (existingRequest) {
       await existingRequest.deleteOne();
     }
     const membersCacheKey = `${CHANNELS_MEMBERS_PREFIX}${channelId}`;
     await rabbitmqService.publishInvalidation(
-      [
-        membersCacheKey,
-      ],
+      [membersCacheKey, `${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${user_id}`],
       "channel"
     );
     return res.json({
       success: true,
       message: "Channel request declined successfully.",
-      channel: channel,
-      membership: existingRequest,
+      channelId: channelId,
+      userId: userId,
     });
   } catch (error) {
     console.error("Error in declining channel request:", error);
@@ -984,13 +1043,10 @@ exports.decline_channel_request = async function (req, res, next) {
   }
 };
 
-
 exports.remove_channel_member = async function (req, res, next) {
   const user_id = res.locals.verified_user_id;
   const { channelId, userId } = req.body;
-  if (
-    !channelId || !userId
-  ) {
+  if (!channelId || !userId) {
     return res.json({
       success: false,
       message: "Invalid Channel ID or User ID",
@@ -1004,7 +1060,11 @@ exports.remove_channel_member = async function (req, res, next) {
         message: "No channel found or you are not the owner.",
       });
     }
-    const existingMember = await ChannelMembership.findOneAndDelete({channel:channelId,user:userId,status:"joined"});
+    const existingMember = await ChannelMembership.findOneAndDelete({
+      channel: channelId,
+      user: userId,
+      status: "joined",
+    });
     const affectedTopicMemberships = await TopicMembership.find({
       channel: channelId,
       user: userId,
@@ -1022,13 +1082,18 @@ exports.remove_channel_member = async function (req, res, next) {
     );
 
     await rabbitmqService.publishInvalidation(
-      [membersCacheKey, ...topicCacheKeys],
+      [
+        membersCacheKey,
+        ...topicCacheKeys,
+        `${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${userId}`,
+        `${CHANNELS_MEMBERS_COUNT_PREFIX}${channelId}`,
+      ],
       "channel"
     );
     return res.json({
       success: true,
       message: "Member removed from channel",
-      channel:channel,
+      channel: channel,
       membership: existingMember,
     });
   } catch (error) {
@@ -1036,6 +1101,138 @@ exports.remove_channel_member = async function (req, res, next) {
     res.status(500).json({
       success: false,
       message: "Error in removing member from channel",
+      error: error.message,
+    });
+  }
+};
+
+exports.join_channel_invite = async function (req, res) {
+  const user_id = res.locals.verified_user_id;
+  const { channelId, code } = req.body;
+
+  try {
+    const [channel, user] = await Promise.all([
+      Channel.findById(channelId)
+        .populate([
+          { path: "topics", select: "name _id editability visibility" },
+          { path: "user", select: "name username _id logo color_logo" },
+        ])
+        .lean(),
+      User.findById(user_id).select("email").lean(),
+    ]);
+
+    if (!channel) {
+      return res.json({ success: false, message: "Channel not found." });
+    }
+
+    const existingMembership = await ChannelMembership.findOne({
+      channel: channelId,
+      user: user_id,
+    });
+
+    if (existingMembership?.status === "joined") {
+      const joinedTopics = await TopicMembership.find({
+        channel: channelId,
+        user: user_id,
+        status: "joined",
+      })
+        .select("topic")
+        .lean();
+
+      return res.json({
+        success: true,
+        message: "You are already a member of this channel.",
+        topics: joinedTopics.map((t) => t.topic),
+        channel,
+        membership: existingMembership,
+        joined: true,
+        joinStatus: "already",
+      });
+    }
+
+    const invite = await Invite.findOne({ channel: channelId, code });
+    if (
+      !invite ||
+      invite.user.toString() !== channel.user._id.toString() ||
+      invite.status === "expired" ||
+      (invite.expire_time && invite.expire_time < new Date()) ||
+      invite.usage_limit <= invite.used_by.length
+    ) {
+      return res.json({
+        success: false,
+        message: "Invalid or expired invite code.",
+      });
+    }
+    if (invite.used_by.includes(user_id)) {
+      return res.json({
+        success: false,
+        message: "You have already used this invite code.",
+      });
+    }
+    invite.used_by.push(user_id);
+    await invite.save();
+    let membership;
+    if (existingMembership) {
+      existingMembership.status = "joined";
+      membership = await existingMembership.save();
+    } else {
+      membership = await ChannelMembership.create({
+        channel: channelId,
+        user: user_id,
+        business: channel.business || null,
+        email: user.email,
+        status: "joined",
+      });
+    }
+    const publicTopics = channel.topics.filter(
+      (t) => t.visibility === "anyone"
+    );
+    const topicIds = publicTopics.map((t) => t._id);
+
+    if (topicIds.length) {
+      const topicMemberships = topicIds.map((topicId) => ({
+        topic: topicId,
+        user: user_id,
+        channel: channel._id,
+        business: channel.business || null,
+        email: user.email,
+        status: "joined",
+      }));
+      await TopicMembership.bulkWrite(
+        topicMemberships.map((doc) => ({ insertOne: { document: doc } }))
+      );
+    }
+
+    const topicCacheKeys = topicIds.map(
+      (id) => `${TOPICS_MEMBERS_PREFIX}${id}`
+    );
+    await rabbitmqService.publishInvalidation(
+      [
+        `${CHANNELS_MEMBERS_PREFIX}${channel._id}`,
+        `${CHANNELS_MEMBERSHIP_PREFIX}${channel._id}:${user_id}`,
+        `${CHANNELS_MEMBERS_COUNT_PREFIX}${channel._id}`,
+        ...topicCacheKeys,
+      ],
+      "channel"
+    );
+
+    return res.json({
+      success: true,
+      message: "Channel joined successfully.",
+      channel: {
+        ...channel,
+        topics: publicTopics,
+      },
+      topics: topicIds,
+      membership,
+      joined: true,
+      joinStatus: "first",
+    });
+  } catch (error) {
+    console.error("join_channel_invite error:", error);
+    return res.json({
+      success: false,
+      message: "Failed to join invite.",
       error: error.message,
     });
   }

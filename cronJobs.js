@@ -54,3 +54,37 @@ const { generate_daily_summary } = require("./api/controllers/SummaryController"
 //     console.error("❌ Auto summary cron error:", err);
 //   }
 // });
+
+
+
+// cron.schedule("0 0 * * *", async () => {
+//   try {
+//     const cutoffDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000); // 2 days ago
+
+//     const [deleteResult, updateResult] = await Promise.all([
+//       Business.deleteMany({
+//         isVerified: false,
+//         current_subscription: null,
+//         createdAt: { $lt: cutoffDate },
+//       }),
+//       Business.updateMany(
+//         {
+//           isVerified: false,
+//           current_subscription: { $ne: null },
+//           createdAt: { $lt: cutoffDate },
+//         },
+//         {
+//           $set: {
+//             domain: "",
+//             verificationToken: "",
+//             provider: "",
+//             type: "community",
+//           },
+//         }
+//       ),
+//     ]);
+//     console.log(`[CRON] Deleted: ${deleteResult.deletedCount}, Updated: ${updateResult.modifiedCount}`);
+//   } catch (error) {
+//     console.error("[CRON ERROR]", error);
+//   }
+// });

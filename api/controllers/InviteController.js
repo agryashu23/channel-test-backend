@@ -18,9 +18,11 @@ const generateCode = () => {
 
 exports.create_channel_invite = async function (req, res) {
   const user_id = res.locals.verified_user_id;
-  const { channelId,usage_limit,expire_time } = req.body;
+  const { id,usage_limit,expire_time } = req.body;
   try {
-    const channel = await Channel.findOne({ _id: channelId, user: user_id });
+    console.log(user_id, id);
+    console.log(usage_limit, expire_time);
+    const channel = await Channel.findOne({ _id: id, user: user_id });
     if (!channel || channel.user.toString() !== user_id.toString()) {
       return res.json({
         success: false,
@@ -31,7 +33,7 @@ exports.create_channel_invite = async function (req, res) {
     const code = generateCode();
     const invite = new Invite({
       code: code,
-      channel: channelId,
+      channel: id,
       business: channel.business,
       user: user_id,
       expire_time: expire_time,
@@ -55,9 +57,9 @@ exports.create_channel_invite = async function (req, res) {
 
 exports.create_topic_invite = async function (req, res) {
   const user_id = res.locals.verified_user_id;
-  const { topicId,usage_limit,expire_time } = req.body;
+  const { id,usage_limit,expire_time } = req.body;
   try {
-    const topic = await Topic.findOne({ _id: topicId, user: user_id });
+    const topic = await Topic.findOne({ _id: id, user: user_id });
     if (!topic) {
       return res.json({
         success: false,
@@ -68,8 +70,9 @@ exports.create_topic_invite = async function (req, res) {
     const code = generateCode();
     const invite = new Invite({
       code: code,
-      topic: topicId,
+      topic: id,
       user: user_id,
+      type:"topic",
       channel: topic.channel,
       business: topic.business,
       expire_time: expire_time,

@@ -1,5 +1,6 @@
 require("dotenv").config();
 var mongoose = require("mongoose");
+var { Types } = require("mongoose");
 var Event = mongoose.model("Event");
 var ChannelChat = mongoose.model("ChannelChat");
 var Poll = mongoose.model("Poll");
@@ -12,27 +13,25 @@ const { uploadSingleImage } = require("../aws/uploads/Images");
 const axios = require("axios");
 const { DateTime } = require("luxon");
 
+const rabbitmqService = require("../services/rabbitmqService");
+const chatRabbitmqService = require("../services/chatRabbitmqService");
+const emailRabbitmqService = require("../services/emailRabbitmqService");
+const redisService = require("../services/redisService");
 
-const rabbitmqService = require('../services/rabbitmqService');
-const chatRabbitmqService = require('../services/chatRabbitmqService');
-const redisService = require('../services/redisService');
+const EVENT_PREFIX = "event:";
+const TOPIC_EVENT_PREFIX = "topic:event:";
+const EVENT_MEMBERSHIP_PREFIX = "event:membership:";
+const EVENT_MEMBERS_PREFIX = "event:members:";
 
-const EVENT_PREFIX = 'event:';
-const TOPIC_EVENT_PREFIX = 'topic:event:';
-const EVENT_MEMBERSHIP_PREFIX = 'event:membership:';
-const EVENT_MEMBERS_PREFIX = 'event:members:';
+const POLL_PREFIX = "poll:";
+const TOPIC_POLL_PREFIX = "topic:poll:";
 
+const CHAT_TOPIC_PREFIX = "topic_chats:";
 
-const POLL_PREFIX = 'poll:';
-const TOPIC_POLL_PREFIX = 'topic:poll:';
-
-const CHAT_TOPIC_PREFIX = 'topic_chats:';
-
-
-const EVENT_SELECT_FIELDS = "_id name user joining startDate endDate startTime endTime locationText location paywallPrice paywall cover_image timezone type meet_url createdAt";
-const POLL_SELECT_FIELDS = "_id question options showResults multipleChoice createdAt";
-
-
+const EVENT_SELECT_FIELDS =
+  "_id name user joining startDate endDate startTime endTime locationText location paywallPrice cover_image timezone type meet_url createdAt";
+const POLL_SELECT_FIELDS =
+  "_id question options showResults multipleChoice createdAt";
 
 async function getLatLngFromPlaceId(placeId) {
   const apiKey = process.env.MAPS_API_KEY;
@@ -51,7 +50,6 @@ async function getLatLngFromPlaceId(placeId) {
   }
 }
 
-
 exports.create_chat_event = async function (req, res) {
   const {
     name,
@@ -63,7 +61,6 @@ exports.create_chat_event = async function (req, res) {
     endTime,
     locationText,
     paywallPrice,
-    paywall,
     location,
     cover_image,
     topic,
@@ -89,7 +86,7 @@ exports.create_chat_event = async function (req, res) {
         message: "Topic not found",
       });
     }
-    let parsedLocation = location
+    let parsedLocation = location;
     if (parsedLocation.includes("place_id=")) {
       const placeId = parsedLocation.split("place_id=")[1].split("&")[0];
       const latLng = await getLatLngFromPlaceId(placeId);
@@ -97,7 +94,7 @@ exports.create_chat_event = async function (req, res) {
         parsedLocation = `https://www.google.com/maps/search/?api=1&query=${latLng.lat},${latLng.lng}`;
       }
     }
-    
+
     const event_data = {
       user: user_id,
       business: topicData.business,
@@ -109,12 +106,11 @@ exports.create_chat_event = async function (req, res) {
       startTime,
       endTime,
       locationText,
-      location:parsedLocation,
+      location: parsedLocation,
       paywallPrice,
-      paywall,
       topic,
-      joined_users:[],
-      requested_users:[],
+      joined_users: [],
+      requested_users: [],
       cover_image: imageUrl,
       timezone,
       type,
@@ -134,14 +130,14 @@ exports.create_chat_event = async function (req, res) {
     await event.save();
     await chat.populate([
       { path: "user", select: "_id username name logo color_logo" },
-      { path: "event", select: EVENT_SELECT_FIELDS }
+      { path: "event", select: EVENT_SELECT_FIELDS },
     ]);
     req.app.get("io").to(topic).emit("receive_message", chat);
     await rabbitmqService.publishInvalidation(
-      [cacheKey,chatCacheKey],
-      'event',
+      [cacheKey, chatCacheKey],
+      "event"
     );
-   
+
     return res.json({
       success: true,
       message: "Chat created successfully",
@@ -171,7 +167,6 @@ exports.edit_chat_event = async function (req, res) {
     location,
     cover_image,
     paywallPrice,
-    paywall,
     topic,
     timezone,
     type,
@@ -204,7 +199,7 @@ exports.edit_chat_event = async function (req, res) {
       imageUrl = cover_image || event.cover_image;
     }
 
-    let parsedLocation = location
+    let parsedLocation = location;
     if (parsedLocation.includes("place_id=")) {
       const placeId = parsedLocation.split("place_id=")[1].split("&")[0];
       const latLng = await getLatLngFromPlaceId(placeId);
@@ -212,7 +207,7 @@ exports.edit_chat_event = async function (req, res) {
         parsedLocation = `https://www.google.com/maps/search/?api=1&query=${latLng.lat},${latLng.lng}`;
       }
     }
-    
+
     const updatedEventData = {
       name,
       description,
@@ -222,9 +217,8 @@ exports.edit_chat_event = async function (req, res) {
       startTime,
       endTime,
       paywallPrice,
-      paywall,
       locationText,
-      location:parsedLocation,
+      location: parsedLocation,
       cover_image: imageUrl,
       timezone,
       type,
@@ -237,12 +231,12 @@ exports.edit_chat_event = async function (req, res) {
     const updatedChat = await ChannelChat.findOne({ _id: event.chat }).populate(
       [
         { path: "user", select: "_id username name" },
-        { path: "event", select:EVENT_SELECT_FIELDS },
+        { path: "event", select: EVENT_SELECT_FIELDS },
       ]
     );
     await rabbitmqService.publishInvalidation(
-      [topicCacheKey,cacheKey,chatCacheKey],
-      'event',
+      [topicCacheKey, cacheKey, chatCacheKey],
+      "event"
     );
     return res.json({
       success: true,
@@ -259,79 +253,34 @@ exports.edit_chat_event = async function (req, res) {
   }
 };
 
- exports.fetch_event_memberships = async function (req, res) {
-   try {
-     const { topicId } = req.body;
-     const user_id = res.locals.verified_user_id;
-
-     if (!topicId) {
-       return res.json({ success: false, message: "Topic ID is required" });
-     }
-     const cacheKey = `${EVENT_MEMBERSHIP_PREFIX}${topicId}:${user_id}`;
-     const cachedMemberships = await redisService.getCache(cacheKey);
-     if (cachedMemberships) {
-      return res.json({
-        success: true,
-        message: "Fetched event memberships for topic",
-        memberships: cachedMemberships, 
-      });
-     }
-     const memberships = await EventMembership.find({
-       topic:topicId,
-       user: user_id,
-     })
-       .select("event status user addedToCalendar topic")
-       .lean();
-     await redisService.setCache(cacheKey, memberships, 3600);
-     return res.json({
-       success: true,
-       message: "Fetched event memberships for topic",
-       memberships: memberships, 
-     });
-   } catch (err) {
-     console.error("Error fetching event memberships:", err);
-     return res.json({
-       success: false,
-       message: "Server error while fetching memberships",
-       error: err.message,
-     });
-   }
- };
-
-
- exports.fetch_all_event_members = async function (req, res) {
+exports.fetch_event_memberships = async function (req, res) {
   try {
-    const { eventId } = req.body;
+    const { topicId } = req.body;
     const user_id = res.locals.verified_user_id;
 
-    if (!eventId) {
-      return res.json({ success: false, message: "Event ID is required" });
+    if (!topicId) {
+      return res.json({ success: false, message: "Topic ID is required" });
     }
-    const event = await Event.findById(eventId).select("user").lean();
-    if(event.user.toString() !== user_id.toString()){
-      return res.json({ success: false, message: "You are not the owner of the event" });
-    }
-    const cacheKey = `${EVENT_MEMBERS_PREFIX}${eventId}`;
-    const cachedMembers = await redisService.getCache(cacheKey);
-    if (cachedMembers) {
+    const cacheKey = `${EVENT_MEMBERSHIP_PREFIX}${topicId}:${user_id}`;
+    const cachedMemberships = await redisService.getCache(cacheKey);
+    if (cachedMemberships) {
       return res.json({
         success: true,
         message: "Fetched event memberships for topic",
-        memberships: cachedMembers, 
+        memberships: cachedMemberships,
       });
     }
     const memberships = await EventMembership.find({
-      event:eventId,
+      topic: topicId,
+      user: user_id,
     })
-      .populate([
-        { path: "user", select: "_id username name logo color_logo" },
-      ])
+      .select("event status user addedToCalendar topic")
       .lean();
     await redisService.setCache(cacheKey, memberships, 3600);
     return res.json({
       success: true,
       message: "Fetched event memberships for topic",
-      memberships: memberships, 
+      memberships: memberships,
     });
   } catch (err) {
     console.error("Error fetching event memberships:", err);
@@ -343,33 +292,99 @@ exports.edit_chat_event = async function (req, res) {
   }
 };
 
+exports.fetch_all_event_members = async function (req, res) {
+  try {
+    const { eventId } = req.body;
+    const user_id = res.locals.verified_user_id;
+
+    if (!eventId) {
+      return res.json({ success: false, message: "Event ID is required" });
+    }
+    const event = await Event.findById(eventId).select("user").lean();
+    if (event.user.toString() !== user_id.toString()) {
+      return res.json({
+        success: false,
+        message: "You are not the owner of the event",
+      });
+    }
+    const cacheKey = `${EVENT_MEMBERS_PREFIX}${eventId}`;
+    const cachedMembers = await redisService.getCache(cacheKey);
+    if (cachedMembers) {
+      return res.json({
+        success: true,
+        message: "Fetched event memberships for topic",
+        memberships: cachedMembers,
+      });
+    }
+    const memberships = await EventMembership.find({
+      event: eventId,
+    })
+      .populate([{ path: "user", select: "_id username name logo color_logo" }])
+      .lean();
+    await redisService.setCache(cacheKey, memberships, 3600);
+    return res.json({
+      success: true,
+      message: "Fetched event memberships for topic",
+      memberships: memberships,
+    });
+  } catch (err) {
+    console.error("Error fetching event memberships:", err);
+    return res.json({
+      success: false,
+      message: "Server error while fetching memberships",
+      error: err.message,
+    });
+  }
+};
 
 exports.fetch_event_data = async function (req, res) {
   const { eventId } = req.body;
-  const user_id = res.locals.verified_user_id;
+  if (!eventId) {
+    return res.json({
+      success: false,
+      message: "Event ID is required",
+    });
+  }
+  let user_id = null;
+
+  if (req.body.user_id) {
+    user_id = req.body.user_id;
+  }
 
   try {
     const cacheKey = `${EVENT_PREFIX}${eventId}`;
     const cachedEvent = await redisService.getCache(cacheKey);
     if (cachedEvent) {
-      const eventMembership = await EventMembership.find({event:eventId,user:user_id}).lean();
+      let eventMembership = {};
+      if (user_id && Types.ObjectId.isValid(user_id)) {
+        eventMembership = await EventMembership.findOne({
+          event: eventId,
+          user: user_id,
+        }).lean();
+      }
       return res.json({
-        success:true,
-        message:"Event fetched successfully",
-        event:cachedEvent,
-        memberships:eventMembership,
+        success: true,
+        message: "Event fetched successfully",
+        event: cachedEvent,
+        membership: eventMembership,
       });
     }
     const event = await Event.findById(eventId).select(EVENT_SELECT_FIELDS);
     if (!event) {
       return res.json({ success: false, message: "Event not found." });
     }
-    const eventMembership = await EventMembership.find({event:eventId,user:user_id}).lean();
+    let eventMembership = {};
+    if (user_id && Types.ObjectId.isValid(user_id)) {
+      eventMembership = await EventMembership.findOne({
+        event: eventId,
+        user: user_id,
+      }).lean();
+    }
     const responseData = {
       success: true,
       message: "Event fetched.",
       event: event,
-      memberships:eventMembership,
+      membership: eventMembership,
     };
     await redisService.setCache(cacheKey, event, 3600);
     res.json(responseData);
@@ -383,7 +398,7 @@ exports.fetch_topic_events = async function (req, res) {
   const { topicId } = req.body;
   const user_id = res.locals.verified_user_id;
   try {
-    if(!topicId || !user_id){
+    if (!topicId || !user_id) {
       return res.json({
         success: false,
         message: "Topic ID is required",
@@ -410,8 +425,17 @@ exports.fetch_topic_events = async function (req, res) {
   }
 };
 
+const buildDateTime = (date, time) => {
+  if (!date) return null;
+  const dateStr = new Date(date).toISOString().split("T")[0];
+  if (time && typeof time === "string" && time.trim()) {
+    return new Date(`${dateStr}T${time.trim()}Z`); // Ensure time is UTC-safe
+  }
+  return new Date(date); // Just the date portion
+};
+
 exports.join_event = async function (req, res) {
-  const { eventId} = req.body;
+  const { eventId } = req.body;
   const user_id = res.locals.verified_user_id;
 
   try {
@@ -426,40 +450,75 @@ exports.join_event = async function (req, res) {
         message: "Event not found.",
       });
     }
-    const alreadyMember = await EventMembership.findOne({event:eventId,user:user_id});
-    if(alreadyMember){
-      if(alreadyMember?.status === "joined"){
-        return res.json({ success: true, 
-          join:true,
-          calendar:true,
-          membership:alreadyMember,
-          message: "You are already a member of this event. Add the event to calendar" });
+    const alreadyMember = await EventMembership.findOne({
+      event: eventId,
+      user: user_id,
+    });
+    if (alreadyMember) {
+      if (alreadyMember?.status === "joined") {
+        return res.json({
+          success: true,
+          join: true,
+          calendar: true,
+          membership: alreadyMember,
+          message:
+            "You are already a member of this event. Add the event to calendar",
+        });
       }
-      return res.json({ success: false, message: "Request already sent. Please wait for approval." });
+      return res.json({
+        success: false,
+        message: "Request already sent. Please wait for approval.",
+      });
     }
-    if(event.paywall && event.paywallPrice > 0){
-      const transaction = await Transaction.findOne({ user: user_id, event: eventId });
-      if (!transaction) {
-        return res.json({ success: false, message: "Transaction not found" });
-      }
+    const now = new Date();
+
+    const eventStartDateTime = buildDateTime(event.startDate, event.startTime);
+    const eventEndDateTime =
+      event.endDate || event.endTime
+        ? buildDateTime(event.endDate || event.startDate, event.endTime)
+        : null;
+    if (eventEndDateTime && eventEndDateTime < now) {
+      return res.json({ success: false, message: "Event has ended." });
+    }
+    if (event.joining === "paid" && event.paywallPrice > 0) {
+      return res.json({
+        success: true,
+        message: "This event is paywalled. Please purchase the event to join.",
+        paywall: true,
+        paywallPrice: event.paywallPrice,
+        membership: null,
+        event: event,
+      });
     }
     let membership = null;
     if (event.joining === "public") {
-      membership = await EventMembership.create({event:eventId,user:user_id,topic:event.topic,status:"joined"});
+      membership = await EventMembership.create({
+        event: eventId,
+        user: user_id,
+        topic: event.topic,
+        status: "joined",
+        business: event.business,
+      });
     } else {
-      membership = await EventMembership.create({event:eventId,user:user_id,topic:event.topic,status:"request"});
+      membership = await EventMembership.create({
+        event: eventId,
+        user: user_id,
+        topic: event.topic,
+        status: "request",
+        business: event.business,
+      });
     }
-    await rabbitmqService.publishInvalidation(
-      [cacheMemKey],
-      'event'
-    );
+    await rabbitmqService.publishInvalidation([cacheMemKey], "event");
     return res.json({
       success: true,
       message: "Event joined sucessfully.",
       membership: membership,
     });
   } catch (error) {
-    res.json({ success: false, message: "Event joining event failed!." });
+    res.json({
+      success: false,
+      message: "Event in progress. Please try again.",
+    });
   }
 };
 
@@ -488,14 +547,18 @@ exports.delete_chat_event = async function (req, res) {
       await EventMembership.deleteMany({ event: eventId });
       await Event.deleteOne({ _id: eventId });
     }
+    req.app
+      .get("io")
+      .to(event.topic)
+      .emit("chat_deleted", { topicId: event.topic, chatId: event.chat });
     await rabbitmqService.publishInvalidation(
-      [cacheKey, topicCacheKey, chatCacheKey,cacheMemKey],
-      'event'
+      [cacheKey, topicCacheKey, chatCacheKey, cacheMemKey],
+      "event"
     );
     await chatRabbitmqService.publishInvalidation(
       [`${EVENT_MEMBERSHIP_PREFIX}${event.topic}:*`],
-      'event',
-      'event-invalidation'
+      "event",
+      "event-invalidation"
     );
     return res.json({
       success: true,
@@ -512,10 +575,106 @@ exports.delete_chat_event = async function (req, res) {
   }
 };
 
+exports.accept_event_request = async function (req, res, next) {
+  const { eventId, userId, email } = req.body;
+  const user_id = res.locals.verified_user_id;
+  try {
+    const event = await Event.findById(eventId)
+      .select("user _id logo name topic cover_image")
+      .populate([{ path: "user", select: "_id username" }])
+      .lean();
+    if (!event || event.user._id.toString() !== user_id.toString()) {
+      return res.json({
+        success: false,
+        message: "No event found or you are not the owner.",
+      });
+    }
+    await EventMembership.findOneAndUpdate(
+      { event: eventId, user: userId, status: "request" },
+      { status: "joined" },
+      { new: true }
+    ).lean();
+    const membersCacheKey = `${EVENT_MEMBERS_PREFIX}${eventId}`;
+    await rabbitmqService.publishInvalidation(
+      [membersCacheKey, `${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${user_id}`],
+      "event"
+    );
+    if (email && email !== "") {
+      await emailRabbitmqService.sendEmailMessage({
+        to: email,
+        channelId: "",
+        channelName: "",
+        eventId: eventId,
+        eventName: event.name,
+        username: event.user.username,
+        logo:
+          event.cover_image ||
+          "https://d3i6prk51rh5v9.cloudfront.net/event_cover.png",
+        topicId: "",
+        topicName: "",
+      });
+    }
+    return res.json({
+      success: true,
+      message: "Event joined successfully.",
+      eventId: eventId,
+      userId: userId,
+    });
+  } catch (error) {
+    console.error("Error in joining event:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error in joining event.",
+      error: error.message,
+    });
+  }
+};
+
+exports.decline_event_request = async function (req, res, next) {
+  const { eventId, userId } = req.body;
+  const user_id = res.locals.verified_user_id;
+
+  try {
+    const event = await Event.findById(eventId).select("user _id topic").lean();
+    if (!event || event.user.toString() !== user_id.toString()) {
+      return res.json({
+        success: false,
+        message: "No event found or you are not the owner.",
+      });
+    }
+    const existingRequest = await EventMembership.findOne({
+      event: eventId,
+      user: userId,
+      status: "request",
+    });
+    if (existingRequest) {
+      await existingRequest.deleteOne();
+    }
+    const membersCacheKey = `${EVENT_MEMBERS_PREFIX}${eventId}`;
+    await rabbitmqService.publishInvalidation(
+      [membersCacheKey, `${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${user_id}`],
+      "event"
+    );
+    return res.json({
+      success: true,
+      message: "Event request declined successfully.",
+      eventId: eventId,
+      userId: userId,
+    });
+  } catch (error) {
+    console.error("Error in declining event request:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error in declining event request.",
+      error: error.message,
+    });
+  }
+};
 
 exports.create_poll = async function (req, res) {
   const userId = res.locals.verified_user_id;
-  const { question, options, topic, type, showResults, multipleChoice } = req.body;
+  const { question, options, topic, type, showResults, multipleChoice } =
+    req.body;
   if (!question || !options || options.length === 0 || !topic) {
     return res.json({
       success: false,
@@ -562,16 +721,13 @@ exports.create_poll = async function (req, res) {
     await savedPollChat.save();
     await chat.populate([
       { path: "user", select: "_id username name" },
-      { path: "poll", select: POLL_SELECT_FIELDS }
+      { path: "poll", select: POLL_SELECT_FIELDS },
     ]);
-    await rabbitmqService.publishInvalidation(
-      [cacheKey,chatCacheKey],
-      'poll',
-    );
+    await rabbitmqService.publishInvalidation([cacheKey, chatCacheKey], "poll");
     return res.json({
       success: true,
       message: "Poll created successfully.",
-      chat:chat,
+      chat: chat,
     });
   } catch (error) {
     console.error("Error creating poll:", error);
@@ -584,26 +740,26 @@ exports.create_poll = async function (req, res) {
 
 exports.fetch_topic_polls = async function (req, res) {
   const { topicId } = req.body;
-  
+
   try {
-    if(!topicId){
+    if (!topicId) {
       return res.json({
         success: false,
         message: "Topic ID is required",
       });
     }
-      const cacheKey = `${TOPIC_POLL_PREFIX}${topicId}`;
-      const cachedChats = await redisService.getCache(cacheKey);
-      if (cachedChats) {
-        return res.json(cachedChats);
-      }
-    const polls = await Poll.find({ topic: topicId}).populate([
+    const cacheKey = `${TOPIC_POLL_PREFIX}${topicId}`;
+    const cachedChats = await redisService.getCache(cacheKey);
+    if (cachedChats) {
+      return res.json(cachedChats);
+    }
+    const polls = await Poll.find({ topic: topicId }).populate([
       { path: "user", select: "_id username name" },
-    ])
+    ]);
     const responseData = {
       success: true,
       message: "Polls fetched successfully",
-      polls:polls,
+      polls: polls,
     };
     await redisService.setCache(cacheKey, responseData, 3600);
     return res.json(responseData);
@@ -617,11 +773,10 @@ exports.fetch_topic_polls = async function (req, res) {
   }
 };
 
-
 exports.make_private_poll_response = async function (req, res) {
   const userId = res.locals.verified_user_id;
   const { choices, pollId } = req.body;
-  
+
   try {
     const poll = await Poll.findById(pollId);
     if (!poll) {
@@ -632,29 +787,35 @@ exports.make_private_poll_response = async function (req, res) {
     if (!Array.isArray(choices) || choices.length === 0) {
       return res.json({ success: false, message: "Choices are required." });
     }
-    const invalidChoice = choices.find(choice => !poll.options.includes(choice));
+    const invalidChoice = choices.find(
+      (choice) => !poll.options.includes(choice)
+    );
     if (invalidChoice) {
-      return res.json({ success: false, message: `Invalid choice: ${invalidChoice}` });
+      return res.json({
+        success: false,
+        message: `Invalid choice: ${invalidChoice}`,
+      });
     }
     if (!poll.multipleChoice && choices.length > 1) {
-      return res.json({ success: false, message: "Multiple choices not allowed in this poll." });
+      return res.json({
+        success: false,
+        message: "Multiple choices not allowed in this poll.",
+      });
     }
-    const existing = poll.responses.find(r => r.user.toString() === userId);
+    const existing = poll.responses.find((r) => r.user.toString() === userId);
     if (existing) {
-      return res.json({ success: false, message: "User has already responded." });
+      return res.json({
+        success: false,
+        message: "User has already responded.",
+      });
     }
-    if(poll.isClosed){
+    if (poll.isClosed) {
       return res.json({ success: false, message: "Poll is closed." });
     }
     poll.responses.push({ user: userId, choice: choices });
     const poll_data = await poll.save();
-    await poll_data.populate([
-      { path: "user", select: "_id username name" },
-    ]);
-    await rabbitmqService.publishInvalidation(
-      [cacheKey,cachePollKey],
-      'poll',
-    );
+    await poll_data.populate([{ path: "user", select: "_id username name" }]);
+    await rabbitmqService.publishInvalidation([cacheKey, cachePollKey], "poll");
     res.json({
       success: true,
       message: "Response added to poll.",
@@ -666,9 +827,8 @@ exports.make_private_poll_response = async function (req, res) {
   }
 };
 
-
 exports.make_public_poll_response = async function (req, res) {
-  const { choices, pollId,userId } = req.body;
+  const { choices, pollId, userId } = req.body;
   const ip = req.ip || req.headers["x-forwarded-for"];
 
   try {
@@ -682,34 +842,43 @@ exports.make_public_poll_response = async function (req, res) {
     if (!Array.isArray(choices) || choices.length === 0) {
       return res.json({ success: false, message: "Choices are required." });
     }
-    const invalidChoice = choices.find(choice => !poll.options.includes(choice));
+    const invalidChoice = choices.find(
+      (choice) => !poll.options.includes(choice)
+    );
     if (invalidChoice) {
-      return res.json({ success: false, message: `Invalid choice: ${invalidChoice}` });
+      return res.json({
+        success: false,
+        message: `Invalid choice: ${invalidChoice}`,
+      });
     }
     if (!poll.multipleChoice && choices.length > 1) {
-      return res.json({ success: false, message: "Multiple choices not allowed." });
+      return res.json({
+        success: false,
+        message: "Multiple choices not allowed.",
+      });
     }
     if (userId) {
-      const existing = poll.responses.find(r => r.user.toString() === userId);
+      const existing = poll.responses.find((r) => r.user.toString() === userId);
       if (existing) {
-        return res.json({ success: false, message: "User has already responded." });
+        return res.json({
+          success: false,
+          message: "User has already responded.",
+        });
       }
       poll.responses.push({ user: userId, choice: choices });
     } else {
-      const alreadyVoted = poll.anonymousResponses.find(r => r.ip === ip);
+      const alreadyVoted = poll.anonymousResponses.find((r) => r.ip === ip);
       if (alreadyVoted) {
-        return res.json({ success: false, message: "Already voted from this IP." });
+        return res.json({
+          success: false,
+          message: "Already voted from this IP.",
+        });
       }
       poll.anonymousResponses.push({ ip: ip, choice: choices });
     }
     const poll_data = await poll.save();
-    await poll_data.populate([
-      { path: "user", select: "_id username name" },
-    ]);
-    await rabbitmqService.publishInvalidation(
-      [cacheKey,cachePollKey],
-      'poll',
-    );
+    await poll_data.populate([{ path: "user", select: "_id username name" }]);
+    await rabbitmqService.publishInvalidation([cacheKey, cachePollKey], "poll");
     res.json({
       success: true,
       message: "Anonymous response recorded.",
@@ -721,7 +890,7 @@ exports.make_public_poll_response = async function (req, res) {
   }
 };
 
-exports.delete_chat_poll  = async function (req, res) {
+exports.delete_chat_poll = async function (req, res) {
   const { pollId } = req.body;
   if (!pollId || !mongoose.Types.ObjectId.isValid(pollId)) {
     return res.json({
@@ -745,7 +914,7 @@ exports.delete_chat_poll  = async function (req, res) {
     }
     await rabbitmqService.publishInvalidation(
       [cacheKey, topicCacheKey, chatCacheKey],
-      'poll'
+      "poll"
     );
     return res.json({
       success: true,
