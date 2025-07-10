@@ -88,6 +88,11 @@ var ChannelChatSchema = new Schema(
       type: String,
       required: false,
     },
+    generalized: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
     links: [
       {
         type: String,

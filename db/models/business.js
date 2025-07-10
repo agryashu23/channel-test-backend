@@ -20,6 +20,10 @@ var ParameterSchema = new Schema({
     type: Boolean,
     default: true,
   },
+  viewMembers:{
+    type: Boolean,
+    default: true,
+  }
 });
 
 var FileSchema = new Schema({
@@ -46,7 +50,7 @@ var BusinessSchema = new Schema(
       ref: "User",
       required: true,
     },
-    name:{
+    name: {
       type: String,
       required: false,
     },
@@ -58,7 +62,7 @@ var BusinessSchema = new Schema(
     current_subscription: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Payment",
-      required:false
+      required: false,
     },
     verificationMethod: {
       type: String,
@@ -71,9 +75,9 @@ var BusinessSchema = new Schema(
       default: "embed",
     },
     loginControl: {
-      type:String,
-      enum:["api","direct"],
-      default:"api"
+      type: String,
+      enum: ["api", "direct"],
+      default: "api",
     },
     verificationToken: {
       type: String,
@@ -100,16 +104,25 @@ var BusinessSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    lastReadNotification: {
+      type: Date,
+      default: null,
+    },
+    secure_code: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
     whatsappNotifications: {
       type: Boolean,
       default: false,
     },
     parameters: {
       type: ParameterSchema,
-      default: () => ({})  
+      default: () => ({}),
     },
-    apiData: [APISchema],
-    filesData: [FileSchema],
+    // apiData: [APISchema],
+    // filesData: [FileSchema],
   },
   { timestamps: true }
 );

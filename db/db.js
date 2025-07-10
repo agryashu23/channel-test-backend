@@ -43,3 +43,6 @@ const plan = require("./models/plan");
 const channelMembership = require("./models/channelMembership");
 const topicMembership = require("./models/topicMembership");
 const eventMembership = require("./models/eventMembership");
+const adminNotification = require("./models/adminNotification");
+const analytics = require("./models/analytics");
+const pollVote = require("./models/pollVote");

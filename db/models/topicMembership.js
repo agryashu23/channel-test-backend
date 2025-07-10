@@ -7,7 +7,7 @@ const TopicMembershipSchema = new Schema(
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: false,
     },
     topic: {
       type: mongoose.Schema.Types.ObjectId,
@@ -27,7 +27,7 @@ const TopicMembershipSchema = new Schema(
     },
     role: {
       type: String,
-      enum: ["admin", "editor", "member","owner"],
+      enum: ["admin", "editor", "member", "owner"],
       default: "member",
     },
     email: {
@@ -36,7 +36,7 @@ const TopicMembershipSchema = new Schema(
     },
     status: {
       type: String,
-      enum: ["joined", "request","processing"],
+      enum: ["joined", "request", "processing"],
       default: "joined",
     },
     joinedAt: {

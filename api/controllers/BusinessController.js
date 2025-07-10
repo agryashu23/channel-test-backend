@@ -10,7 +10,7 @@ const Event = mongoose.model("Event");
 const Business = mongoose.model("Business");
 const Transaction = mongoose.model("Transaction");
 const Plan = mongoose.model("Plan");
-
+const crypto = require("crypto");
 const { uploadFileToS3 } = require("../aws/uploads/Images");
 
 const pLimit = require("p-limit");
@@ -21,8 +21,13 @@ const {
   syncMembershipsFromAdmin,
 } = require("../../utils/linkMembership");
 const rabbitmqService = require("../services/rabbitmqService");
+const { CachePrefix } = require("../../utils/prefix");
+const redisClient = require("../../utils/redisClient");
+const RedisHelper = require("../../utils/redisHelpers");
+const emailRabbitmqService = require("../services/emailRabbitmqService");
 
-const BUSINESS_PREFIX = "embed:business:";
+const BUSINESS_PUBLIC_FIELDS = "user_id name domain current_subscription type loginControl autoLogin apiKey parameters lastReadNotification whatsappNotifications chatSummary auto_login_request isVerified";
+
 
 exports.fetch_business_credentials = async function (req, res) {
   const { username } = req.body;
@@ -36,12 +41,12 @@ exports.fetch_business_credentials = async function (req, res) {
       });
     }
     const user_id = user._id;
-    const cacheKey = `${BUSINESS_PREFIX}${user_id}`;
-    //  const cachedVal = await redisService.getCache(cacheKey);
-    //  if (cachedVal) {
-    //    return res.json(cachedVal);
-    //  }
-    const business = await Business.findOne({ user_id }).lean();
+    const cacheKey = `${CachePrefix.BUSINESS_PREFIX}${user_id}`;
+    const cachedVal = await redisService.getCache(cacheKey);
+    if (cachedVal) {
+      return res.json(cachedVal);
+    }
+    const business = await Business.findOne({ user_id }).select(BUSINESS_PUBLIC_FIELDS).lean();
 
     if (!business) {
       return res.json({ success: false, message: "Invalid account details" });
@@ -74,7 +79,7 @@ exports.save_admin_api = async function (req, res) {
 
   try {
     const business = await Business.findOne({ user_id });
-    const cacheKey = `${BUSINESS_PREFIX}${user_id}`;
+    const cacheKey = `${CachePrefix.BUSINESS_PREFIX}${user_id}`;
 
     if (!business) {
       return res.status(404).json({
@@ -107,7 +112,7 @@ exports.save_admin_upload = async function (req, res) {
 
   try {
     const business = await Business.findOne({ user_id });
-    const cacheKey = `${BUSINESS_PREFIX}${user_id}`;
+    const cacheKey = `${CachePrefix.BUSINESS_PREFIX}${user_id}`;
     if (!business) {
       return res.status(404).json({
         success: false,
@@ -147,7 +152,7 @@ exports.request_login_auto = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const cacheKey = `${BUSINESS_PREFIX}${user_id}`;
+    const cacheKey = `${CachePrefix.BUSINESS_PREFIX}${user_id}`;
     const business = await Business.findOne({ apiKey: apiKey });
     if (!business) {
       return res.json({
@@ -206,58 +211,35 @@ exports.syncInitialAdminData = async function (req, res) {
   }
 };
 
-exports.syncAdminData = async function (req, res) {
-  const { email, channelName, business } = req.query;
-  let topicNames = [];
-  try {
-    topicNames = JSON.parse(req.query.topicNames || "[]");
-    if (!Array.isArray(topicNames)) throw new Error("Invalid");
-  } catch (err) {
-    return res.json({
-      success: false,
-      message: "Invalid topicNames format. Must be a JSON array.",
-    });
-  }
-  if (!email || !channelName || !business) {
-    return res.json({
-      success: false,
-      message: "Missing required query parameters.",
-    });
-  }
-  try {
-    const result = await syncMembershipsFromAdmin({
-      business,
-      email,
-      channelName,
-      topicNames,
-    });
-    await rabbitmqService.publishInvalidation(result, "admin");
-    return res.json({
-      success: true,
-      message: "Admin data synced successfully",
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      success: false,
-      message: "Error syncing admin data. Please try again later.",
-    });
-  }
-};
-
-exports.fetch_channel_requests = async function (req, res) {
+exports.fetch_business_channel_requests = async function (req, res) {
   const user_id = res.locals.verified_user_id;
-
   try {
-    const [business, channels] = await Promise.all([
+    
+    const [business] = await Promise.all([
       Business.findOne({ user_id: user_id }).select("_id").lean(),
-      Channel.find({ user: user_id }).select("_id name logo").lean(),
     ]);
+    const channels = await Channel.find({ business:business._id }).select("_id name logo").lean();
+    if (!business) {
+      return res.json({
+        success: false,
+        message: "Business not found",
+      });
+    }
+    const cacheKey = `${CachePrefix.CHANNEL_BUSINESS_REQUESTS_PREFIX}${business._id}`;
     if (!channels.length) {
       return res.json({
         success: true,
         message: "No channels found.",
         requests: [],
+        channels: channels,
+      });
+    }
+    const cachedVal = await redisService.getCache(cacheKey);
+    if (cachedVal) {
+      return res.json({
+        success: true,
+        message: "Fetched requests from cache",
+        requests: cachedVal,
         channels: channels,
       });
     }
@@ -271,6 +253,7 @@ exports.fetch_channel_requests = async function (req, res) {
       { path: "user", select: "_id name username logo color_logo email" },
       { path: "channel", select: "_id name logo" },
     ]);
+    await redisService.setCache(cacheKey, channelRequests, 3600);
 
     return res.json({
       success: true,
@@ -287,22 +270,39 @@ exports.fetch_channel_requests = async function (req, res) {
   }
 };
 
-exports.fetch_topic_requests = async function (req, res) {
+exports.fetch_business_topic_requests = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const [business, channels] = await Promise.all([
+    const [business] = await Promise.all([
       Business.findOne({ user_id: user_id }).select("_id").lean(),
-      Channel.find({ user: user_id })
-        .select("_id name logo topics")
-        .populate({ path: "topics", select: "_id name" })
-        .lean(),
     ]);
+    const channels = Channel.find({ business:business._id})
+    .select("_id name logo topics")
+    .populate({ path: "topics", select: "_id name" })
+    .lean();
+    
+    if (!business) {
+      return res.json({
+        success: false,
+        message: "Business not found",
+      });
+    }
     if (!channels.length) {
       return res.json({
         success: true,
         message: "No channels found.",
         requests: [],
+        channels: channels,
+      });
+    }
+    const cacheKey = `${CachePrefix.TOPIC_BUSINESS_REQUESTS_PREFIX}${business?._id}`;
+    const cachedVal = await redisService.getCache(cacheKey);
+    if (cachedVal) {
+      return res.json({
+        success: true,
+        message: "Fetched requests",
+        requests: cachedVal,
         channels: channels,
       });
     }
@@ -320,7 +320,7 @@ exports.fetch_topic_requests = async function (req, res) {
       { path: "user", select: "_id name username logo color_logo email" },
       { path: "topic", select: "_id name" },
     ]);
-
+    await redisService.setCache(cacheKey, topicRequests, 3600);
     return res.json({
       success: true,
       message: "Fetched requests",
@@ -340,19 +340,37 @@ exports.fetch_event_requests = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const [business, events] = await Promise.all([
+    const [business] = await Promise.all([
       Business.findOne({ user_id: user_id }).select("_id").lean(),
-      Event.find({ user: user_id })
-        .select(
-          "_id name type startDate endDate startTime endTime locationText location meet_url cover_image"
-        )
-        .lean(),
     ]);
+    const events = await Event.find({ business:business._id })
+    .select(
+      "_id name type startDate endDate startTime endTime locationText location meet_url cover_image"
+    )
+    .lean();
+    
+    if (!business) {
+      return res.json({
+        success: false,
+        message: "Business not found",
+      });
+    }
+    
     if (!events.length) {
       return res.json({
         success: true,
         message: "No events found.",
         requests: [],
+        events: events,
+      });
+    }
+    const cacheKey = `${CachePrefix.EVENT_BUSINESS_REQUESTS_PREFIX}${business._id}`;
+    const cachedVal = await redisService.getCache(cacheKey);
+    if (cachedVal) {
+      return res.json({
+        success: true,
+        message: "Fetched requests",
+        requests: cachedVal,
         events: events,
       });
     }
@@ -366,6 +384,7 @@ exports.fetch_event_requests = async function (req, res) {
       .populate([
         { path: "user", select: "_id name username logo color_logo email" },
       ]);
+    await redisService.setCache(cacheKey, eventRequests, 3600);
     return res.json({
       success: true,
       message: "Fetched requests",
@@ -386,8 +405,8 @@ exports.update_admin_params = async function (req, res) {
   const { allowDM, talkToBrand } = req.body;
 
   try {
-    const cacheKey = `${BUSINESS_PREFIX}${user_id}`;
-    const business = await Business.findOne({ user: user_id });
+    const cacheKey = `${CachePrefix.BUSINESS_PREFIX}${user_id}`;
+    const business = await Business.findOne({ user_id:user_id });
     if (!business) {
       return res.json({
         success: false,
@@ -426,12 +445,15 @@ exports.update_topic_summary_settings = async function (req, res) {
   }
 
   try {
-    const business = await Business.findOne({ user: user_id }).select(
-      "chatSummary"
+    const cacheKey = `${CachePrefix.BUSINESS_PREFIX}${user_id}`;
+    const business = await Business.findOne({ user_id }).select(
+      "_id chatSummary"
     );
+    const cacheKeys=[];
     if (business) {
       business.chatSummary = allowSummary;
       await business.save();
+      cacheKeys.push(cacheKey);
     }
     if (allowSummary && data.length > 0) {
       const bulkOps = data.map(
@@ -448,9 +470,14 @@ exports.update_topic_summary_settings = async function (req, res) {
           },
         })
       );
-
       await Topic.bulkWrite(bulkOps);
     }
+    const topicIds = data.map((topic) => topic.topic);
+    for(const topicId of topicIds){
+      const cacheKey2 = `${CachePrefix.TOPIC_PREFIX}${topicId}`;
+      cacheKeys.push(cacheKey2);
+    }
+    await rabbitmqService.publishInvalidation(cacheKeys, "business");
     return res.json({
       success: true,
       message: "Topic summary settings updated successfully",
@@ -471,9 +498,11 @@ exports.update_business_customizations = async function (req, res) {
     chatSummary,
     allowDM,
     talkToBrand,
+    viewMembers,
     loginControl,
   } = req.body;
   try {
+    const cacheKey = `${CachePrefix.BUSINESS_PREFIX}${user_id}`;
     const business = await Business.findOne({ user_id: user_id });
     if (!business) {
       return res.json({ success: false, message: "Business not found" });
@@ -484,9 +513,11 @@ exports.update_business_customizations = async function (req, res) {
     business.whatsappNotifications = whatsappNotifications;
     business.chatSummary = chatSummary;
     business.parameters.allowDM = allowDM;
+    business.parameters.viewMembers = viewMembers;
     business.parameters.talkToBrand = talkToBrand;
     business.loginControl = loginControl || "api";
     await business.save();
+    await rabbitmqService.publishInvalidation([cacheKey], "business");
     return res.json({
       success: true,
       message: "Business customizations updated successfully",
@@ -504,7 +535,14 @@ exports.update_business_customizations = async function (req, res) {
 exports.fetch_business_channels_topics = async function (req, res) {
   const user_id = res.locals.verified_user_id;
   try {
-    const channels = await Channel.find({ user: user_id })
+    const business = await Business.findOne({ user_id:user_id });
+    if (!business) {
+      return res.json({
+        success: false,
+        message: "Business not found",
+      });
+    }
+    const channels = await Channel.find({ business: business._id })
       .select("_id name logo topics")
       .populate({ path: "topics", select: "_id name" })
       .lean();
@@ -534,36 +572,20 @@ exports.fetch_roles_and_members = async function (req, res) {
   const user_id = res.locals.verified_user_id;
   const { channelId, topicId } = req.body;
   if (!user_id) {
+    return res.json({
+      success: false,
+      message: "User not authenticated",
+    });
   }
   if (!channelId) {
     return res.json({ members: [], topics: [] });
   }
-
   try {
     let members = [];
-    if (topicId) {
-      const topicMemberships = await TopicMembership.find({
-        topic: topicId,
-        status: "joined",
-        role: { $ne: "owner" },
-      })
-        .populate([
-          { path: "user", select: "_id name username email logo color_logo" },
-        ])
-        .lean();
-
-      members = topicMemberships;
-    } else {
-      const channelMemberships = await ChannelMembership.find({
-        channel: channelId,
-        status: "joined",
-        role: { $ne: "owner" },
-      })
-        .populate([
-          { path: "user", select: "_id name username email logo color_logo" },
-        ])
-        .lean();
-      members = channelMemberships;
+     if (topicId) {
+      members = await RedisHelper.getTopicMembers(topicId);
+     } else {
+      members = await RedisHelper.getChannelMembers(channelId);
     }
     return res.json({
       success: true,
@@ -587,37 +609,38 @@ exports.update_user_business_role = async function (req, res) {
     });
   }
   try {
-    const isOwner = await ChannelMembership.findOne({
-      channel: channelId,
-      user: user_id,
-      role: "owner",
-    });
-    if (!isOwner) {
+    const ownership = await RedisHelper.getChannelMembership(user_id, channelId);
+    if (!ownership || ownership.role !== "owner") {
       return res.json({
         success: false,
         message: "You are not authorized to update roles.",
       });
     }
-    if (channelId && topicId) {
-      const membership = await TopicMembership.findOne({
-        topic: topicId,
-        channel: channelId,
-        user: userId,
-      });
-      if (!membership) {
-        return res.json({
-          success: false,
-          message: "Membership not found",
-        });
+     if (channelId && topicId) {
+      const cacheKey = `${CachePrefix.TOPIC_MEMBERSHIP_USER_PREFIX}${topicId}:${userId}`;
+       const membership = await TopicMembership.findOne({
+         topic: topicId,
+         channel: channelId,
+         user: userId,
+       });
+       if (!membership) {
+         return res.json({
+           success: false,
+           message: "Membership not found",
+         });
+       }
+       if(membership.role !==role){
+          membership.role = role;
+          await membership.save();
+          await redisService.setCache(cacheKey, membership, 36000);
       }
-      membership.role = role;
-      await membership.save();
       return res.json({
         success: true,
-        message: "User role updated successfully",
-        membership: membership,
+          message: "User role updated successfully",
+          membership: membership,
       });
-    }
+     }
+     const cacheKey = `${CachePrefix.CHANNEL_MEMBERSHIP_USER_PREFIX}${channelId}:${userId}`;
     const membership = await ChannelMembership.findOne({
       channel: channelId,
       user: userId,
@@ -628,8 +651,15 @@ exports.update_user_business_role = async function (req, res) {
         message: "Membership not found",
       });
     }
-    membership.role = role;
-    await membership.save();
+    if(membership.role !==role){
+      membership.role = role;
+      await membership.save();
+      if(role === "admin" && ownership.business){
+        const business = ownership.business;
+        await emailRabbitmqService.AddAdminMembershipTopicsJob({ userId, channelId, business});
+      }
+      await redisService.setCache(cacheKey, membership, 36000);
+    }
     return res.json({
       success: true,
       message: "Role updated successfully",
@@ -644,7 +674,6 @@ exports.update_user_business_role = async function (req, res) {
 exports.remove_user_business_member = async function (req, res) {
   const user_id = res.locals.verified_user_id;
   const { userId, channelId, topicId } = req.body;
-  console.log(userId, channelId, topicId);
 
   if (!user_id || !channelId || !userId) {
     return res.json({
@@ -654,12 +683,8 @@ exports.remove_user_business_member = async function (req, res) {
     });
   }
   try {
-    const isOwner = await ChannelMembership.findOne({
-      channel: channelId,
-      user: user_id,
-      role: "owner",
-    });
-    if (!isOwner) {
+    const ownership = await RedisHelper.getChannelMembership(user_id, channelId);
+    if (!ownership || ownership.role !== "owner") {
       return res.json({
         success: false,
         message: "You are not authorized to update roles.",
@@ -671,24 +696,44 @@ exports.remove_user_business_member = async function (req, res) {
         channel: channelId,
         user: userId,
       });
-      return res.json({
-        success: true,
-        message: "User removed from topic successfully",
-        userId: userId,
-      });
+        const cacheKey2 = `${CachePrefix.TOPIC_MEMBERSHIP_USER_PREFIX}${topicId}:${userId}`;
+        await RedisHelper.removeUserFromTopic(topicId, userId);
+        await rabbitmqService.publishInvalidation([cacheKey2], "topic");
+        return res.json({
+          success: true,
+          message: "User removed from topic successfully",
+          userId: userId,
+        });
     }
-    await Promise.all([
-      TopicMembership.deleteMany({
-        channel: channelId,
-        user: userId,
-        status: "joined",
-      }),
-      ChannelMembership.deleteOne({
-        channel: channelId,
-        user: userId,
-        status: "joined",
-      }),
-    ]);
+      const [existingMember, affectedTopicMemberships,_] = await Promise.all([
+        ChannelMembership.findOneAndDelete({
+          channel: channelId,
+          user: userId,
+          status: "joined",
+        }),
+        TopicMembership.find({
+          channel: channelId,
+          user: userId,
+          status: "joined",
+        }).lean(),
+        TopicMembership.deleteMany({
+          channel: channelId,
+          user: userId,
+          status: "joined",
+        })
+      ]);
+      const topicIds = affectedTopicMemberships.map(tm => tm.topic);
+      await RedisHelper.removeUserFromMultipleTopics(topicIds, userId);
+      if(ownership.business){
+        await RedisHelper.removeUserFromBusiness(ownership.business, userId);
+      }
+      await RedisHelper.removeUserFromChannel(channelId,userId);
+      await rabbitmqService.publishInvalidation(
+        [
+          `${CachePrefix.CHANNEL_MEMBERSHIP_USER_PREFIX}${channelId}:${userId}`,
+        ],
+        "channel"
+      );
     return res.json({
       success: true,
       message: "User removed from channel successfully",
@@ -699,3 +744,99 @@ exports.remove_user_business_member = async function (req, res) {
     return res.status(500).json({ error: "Internal Server Error" });
   }
 };
+
+async function generateSecureCode(userId) {
+  const randomBytes = crypto.randomBytes(6).toString("base64url");
+  const userPart = userId.toString().slice(-4);
+  return `${randomBytes}${userPart}`;
+}
+
+exports.business_generate_code = async function (req, res) {
+  const user_id = res.locals.verified_user_id;
+  try {
+    const business = await Business.findOne({ user_id: user_id });
+    if (!business) {
+      return res.json({
+        success: false,
+        message: "Business not found",
+      });
+    }
+    if (business.secure_code) {
+      return res.json({
+        success: true,
+        code: business.secure_code,
+        message: "Business code already exists",
+      });
+    }
+    const code = await generateSecureCode(user_id);
+    business.secure_code = code;
+    await business.save();
+    return res.json({
+      success: true,
+      message: "Business code generated successfully",
+      code: code,
+    });
+  } catch (err) {
+    console.error("Error generating secure code:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  } 
+};
+
+exports.business_member_sync = async function (req, res) {
+  const { secureCode, channelName, email } = req.body;
+  let topicNames = [];
+
+  if (Array.isArray(req.body.topicNames)) {
+    topicNames = req.body.topicNames;
+  } else if (typeof req.body.topicNames === "string") {
+    try {
+      topicNames = JSON.parse(req.body.topicNames);
+      if (!Array.isArray(topicNames)) {
+        return res.json({
+          success: false,
+          message: "Invalid format.",
+        });
+      }
+    } catch (err) {
+      return res.json({
+        success: false,
+        message: "Invalid topicNames format. Must be a JSON array.",
+      });
+    }
+  } else if (req.body.topicNames !== undefined) {
+    return res.json({
+      success: false,
+      message: "Invalid topicNames format. Must be a JSON array.",
+    });
+  }
+
+  try {
+    if (!secureCode || !channelName || !email) {
+      return res.json({
+        success: false,
+        message: "Missing required fields: secureCode, channelName, email",
+      });
+    }
+    const business = await Business.findOne({ secure_code: secureCode });
+    if (!business) {
+      return res.json({
+        success: false,
+        message: "Business not found with the provided secure code.",
+      });
+    }
+    await syncMembershipsFromAdmin({
+      business: business._id,
+      email,
+      channelName,
+      topicNames,
+    });
+    return res.json({
+      success: true,
+      message: "Data synced",
+    });
+  } catch (error) {
+    console.log("Error syncing business members:", error);
+    return res.json({ error: error.message });
+  }
+};
+

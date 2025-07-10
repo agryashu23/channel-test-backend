@@ -130,8 +130,15 @@ router.post(
   upload.single("file"),
   EventController.create_chat_event
 );
-router.post("/create/chat/poll", VerifyUser, EventController.create_poll);
 router.post("/fetch/event/data", EventController.fetch_event_data);
+
+//poll
+router.post("/create/chat/poll", VerifyUser, EventController.create_chat_poll);
+router.post(
+  "/fetch/topic/poll/responses",
+  VerifyUser,
+  EventController.fetch_topic_poll_responses
+);
 router.post(
   "/create/private/poll/response",
   VerifyUser,
@@ -141,6 +148,8 @@ router.post(
   "/create/public/poll/response",
   EventController.make_public_poll_response
 );
+router.post("/delete/chat/poll", VerifyUser, EventController.delete_chat_poll);
+router.post("/fetch/poll/data", EventController.fetch_poll_data);
 
 router.post(
   "/edit/chat/event",
@@ -161,7 +170,6 @@ router.post(
 router.post(
   "/check/channel/name",
   VerifyUser,
-
   ChannelController.check_channel_name
 );
 // router.post(
@@ -215,6 +223,11 @@ router.post(
   ChannelController.fetch_channel_members
 );
 router.post(
+  "/fetch/channel/requests",
+  VerifyUser,
+  ChannelController.fetch_channel_requests
+);
+router.post(
   "/accept/channel/request",
   VerifyUser,
   ChannelController.accept_channel_request
@@ -259,6 +272,11 @@ router.post(
   "/fetch/topic/members",
   VerifyUser,
   TopicController.fetch_topic_members
+);
+router.post(
+  "/fetch/topic/requests",
+  VerifyUser,
+  TopicController.fetch_topic_requests
 );
 router.post(
   "/remove/topic/member",
@@ -850,19 +868,30 @@ router.post(
   BusinessController.request_login_auto
 );
 router.post(
-  "/fetch/channel/requests",
+  "/fetch/business/channel/requests",
   VerifyUser,
-  BusinessController.fetch_channel_requests
+  BusinessController.fetch_business_channel_requests
 );
 router.post(
-  "/fetch/topic/requests",
+  "/fetch/business/topic/requests",
   VerifyUser,
-  BusinessController.fetch_topic_requests
+  BusinessController.fetch_business_topic_requests
 );
 router.post(
   "/fetch/event/requests",
   VerifyUser,
   BusinessController.fetch_event_requests
+);
+
+router.post(
+  "/update/admin/params",
+  VerifyUser,
+  BusinessController.update_admin_params
+);
+router.post(
+  "/update/topic/summary/settings",
+  VerifyUser,
+  BusinessController.update_topic_summary_settings
 );
 
 router.post("/save/admin/api", VerifyUser, BusinessController.save_admin_api);
@@ -909,4 +938,13 @@ router.post(
   VerifyUser,
   BusinessController.remove_user_business_member
 );
+
+router.post(
+  "/business/generate-code",
+  VerifyUser,
+  BusinessController.business_generate_code
+);
+
+router.post("/business/member/sync", BusinessController.business_member_sync);
+
 module.exports = router;

@@ -27,17 +27,11 @@ const {
   apiMetadata,
   apiMetadata2,
 } = require("../aws/uploads/Images");
+const redisClient = require("../../utils/redisClient");
+const RedisHelper = require("../../utils/redisHelpers");
+const {CachePrefix} = require("../../utils/prefix");
 
-const TOPIC_PREFIX = "topic:";
-const TOPICS_ALL_CHANNEL_PREFIX = "topics:all:channel:";
-const TOPICS_MEMBERS_PREFIX = "topics:members:";
-const TOPIC_MEMBERSHIP_PREFIX = "topic:membership:";
-
-const CHANNEL_PREFIX = "channel:";
-const CHANNELS_CREATED_PREFIX = "channels:created:";
-const CHANNELS_MEMBERS_PREFIX = "channels:members:";
-const CHANNELS_MEMBERSHIP_PREFIX = "channels:membership:";
-const CHANNELS_MEMBERS_COUNT_PREFIX = "channels:members:count:";
+const TOPIC_BASIC_FIELDS = "_id name visibility editability paywallPrice channel description user business";
 
 exports.create_topic = async function (req, res) {
   const user_id = res.locals.verified_user_id;
@@ -56,18 +50,53 @@ exports.create_topic = async function (req, res) {
     });
   }
   try {
-    const channelDoc = await Channel.findById(channel);
-    const topic_exist = await Topic.findOne({
-      name: name,
-      user: user_id,
-      channel: channel,
-    });
+
+    const [channelDoc,user,topic_exist,channelMembership] = await Promise.all([
+      Channel.findById(channel).select("_id business topics user").populate({path:"user",select:"_id username name "}),
+      User.findById(user_id).select("email").lean(),
+      Topic.findOne({
+        name: name,
+        user: user_id,
+        channel: channel,
+      }).lean(),
+      RedisHelper.getChannelMembership(user_id,channel),
+    ]);
     if (topic_exist) {
       return res.json({
         success: false,
         message: "Topic name already exist.",
       });
     }
+
+    if(!channelMembership || (channelMembership.role !== "owner" && channelMembership.role !== "admin")){
+      return res.json({
+        success: false,
+        message: "You don't have permission to create topic in this channel.",
+      });
+    }
+
+    let topicsCount = await RedisHelper.getTopicsCount(channel);
+    let myPlan = await RedisHelper.getBusinessPlan(channelDoc.business);
+    if((!myPlan && topicsCount >= 2) || (myPlan && myPlan.features.maxTopics<=topicsCount)){
+      if(user.business){
+      await emailRabbitmqService.sendNotificationMessage({
+        type: "admin_notification",
+        business: user.business,
+        buttonText: "",
+        buttonLink: `/account/billing`,
+        content: `You have reached the maximum number of topic in channel ${channelDoc.name}. Upgrade your plan to add more.`,
+      });
+    }
+      return res.json({
+        success: true,
+        isBusiness: user.business?true:false,
+        limitReached: true,
+        username:channelDoc.user?.username,
+        message: `You have reached the maximum number of topic in channel ${channelDoc.name}. Upgrade your plan to add more.`,
+      });
+    }
+
+
     const topic_data = {
       user: user_id,
       name: name,
@@ -78,13 +107,13 @@ exports.create_topic = async function (req, res) {
       paywallPrice: paywallPrice,
     };
     const topic = await Topic.create(topic_data);
-    const user = await User.findById(user_id).select("email").lean();
     const myMembership = await TopicMembership.create({
       channel: channelDoc._id,
       topic: topic._id,
       user: user_id,
-      role: "owner",
+      role: channelMembership.role,
       email: user.email,
+      business: channelDoc.business,
       status: "joined",
     });
     const id = topic._id;
@@ -92,12 +121,21 @@ exports.create_topic = async function (req, res) {
       channelDoc.topics.push(id);
       await channelDoc.save();
     }
-    const topicsAllChannelCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${channel}`;
-    const createdChannelsCacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
-    const channelCacheKey = `${CHANNEL_PREFIX}${channel}`;
+    // const topicsAllChannelCacheKey = `${CachePrefix.TOPICS_ALL_CHANNEL_PREFIX}${channel}`;
+    const createdChannelsCacheKey = `${CachePrefix.CHANNELS_CREATED_PREFIX}${user_id}`;
+    const channelCacheKey = `${CachePrefix.CHANNEL_PREFIX}${channel}`;
+
+    await Promise.all([
+      RedisHelper.addTopicToChannel(channel, topic),
+      RedisHelper.incrementTopicsCount(channel),
+    ]);
     await rabbitmqService.publishInvalidation(
-      [topicsAllChannelCacheKey, createdChannelsCacheKey, channelCacheKey],
+      [createdChannelsCacheKey,channelCacheKey],
       "topic"
+    );
+    await emailRabbitmqService.sendTopicAdminMembershipJob(
+      { topicId: topic._id, channelId: channel, 
+        creatorId: user_id, business: channelDoc.business || null }
     );
     return res.json({
       success: true,
@@ -108,7 +146,7 @@ exports.create_topic = async function (req, res) {
       },
     });
   } catch (error) {
-    res.json({ error: "Topic can't be created." });
+    res.json({success:false,message:error.message, error: "Topic can't be created." });
   }
 };
 
@@ -122,22 +160,29 @@ exports.createGeneralTopic = async function (req, res) {
       message: "Invalid or missing channelId",
     });
   }
-
   try {
-    const channel = await Channel.findById(channelId)
-      .select("_id business")
-      .lean();
+    const [channel,user,existingTopic,channelMembership] = await Promise.all([
+      Channel.findById(channelId).select("_id business topics"),
+      User.findById(user_id).select("email").lean(),
+      Topic.findOne({
+        name: "general",
+        channel: channelId,
+      }).lean(),
+      RedisHelper.getChannelMembership(user_id,channelId),
+    ]);
     if (!channel) {
       return res.json({ success: false, message: "Channel not found" });
     }
-    const existingTopic = await Topic.findOne({
-      name: "general",
-      channel: channelId,
-    }).lean();
     if (existingTopic) {
       return res.json({
         success: false,
         message: "Topic name general already exists in this channel",
+      });
+    }
+    if(!channelMembership || (channelMembership.role !== "owner" && channelMembership.role !== "admin")){
+      return res.json({
+        success: false,
+        message: "You don't have permission to create topic in this channel.",
       });
     }
     const topic_data = {
@@ -145,29 +190,39 @@ exports.createGeneralTopic = async function (req, res) {
       channel: channelId,
       user: user_id,
       business: channel.business || null,
+      visibility: "anyone",
+      editability: "anyone",
+      paywallPrice: 0,
     };
     const newTopic = await Topic.create(topic_data);
-    channel.topics.push(newTopic._id);
-    await channel.save();
-    const user = await User.findById(user_id).select("email").lean();
+    
     const myMembership = await TopicMembership.create({
       channel: channelId,
       topic: newTopic._id,
       user: user_id,
-      role: "owner",
+      role: channelMembership.role,
+      business: channel.business || null,
       email: user.email,
       status: "joined",
     });
-    const createdChannelsCacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
-    const channelCacheKey = `${CHANNEL_PREFIX}${channelId}`;
-    const topicsChannelCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${channelId}`;
-    await redisService.setCache(
-      `${TOPIC_MEMBERSHIP_PREFIX}${newTopic._id}:${user_id}`,
-      myMembership,
-      3600
+
+    if(channel){
+      channel.topics.push(newTopic._id);
+      await channel.save();
+    }
+    const createdChannelsCacheKey = `${CachePrefix.CHANNELS_CREATED_PREFIX}${user_id}`;
+    const channelCacheKey = `${CachePrefix.CHANNEL_PREFIX}${channelId}`;
+    // const topicsChannelCacheKey = `${CachePrefix.TOPICS_ALL_CHANNEL_PREFIX}${channelId}`;
+    await Promise.all([
+      RedisHelper.addTopicToChannel(channelId, newTopic),
+      RedisHelper.incrementTopicsCount(channelId),
+    ]);
+    await emailRabbitmqService.sendTopicAdminMembershipJob(
+      { topicId: newTopic._id, channelId: channelId, 
+        creatorId: user_id, business: channel.business || null }
     );
     await rabbitmqService.publishInvalidation(
-      [createdChannelsCacheKey, channelCacheKey, topicsChannelCacheKey],
+      [createdChannelsCacheKey,channelCacheKey],
       "topic"
     );
     return res.json({
@@ -195,11 +250,14 @@ exports.update_topic = async function (req, res) {
   }
 
   try {
-    const topic = await Topic.findById(_id);
-    if (!topic || topic.user.toString() !== user_id.toString()) {
+    const [topic,ownership] = await Promise.all([
+      RedisHelper.getOrCacheTopic(_id,`${CachePrefix.TOPIC_PREFIX}${_id}`),
+      RedisHelper.getTopicMembership(user_id,_id),
+    ]);
+    if(!topic || (!ownership || (ownership.role !== "owner" && ownership.role !== "admin"))){
       return res.json({
         success: false,
-        message: "Topic not found or you are not the owner.",
+        message: "Topic not found or you don't have authority to update this topic.",
       });
     }
 
@@ -213,36 +271,27 @@ exports.update_topic = async function (req, res) {
       },
       { new: true }
     );
-    let myMembership = null;
-    const cacheKey = `${TOPIC_MEMBERSHIP_PREFIX}${_id}:${user_id}`;
-    myMembership = await redisService.getCache(cacheKey);
-    if (!myMembership) {
-      myMembership = await TopicMembership.findOne({
-        topic: _id,
-        channel: topic.channel,
-        user: user_id,
-      }).lean();
-    }
-    const topicsAllChannelCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${topic.channel}`;
-    const createdChannelsCacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
-    const channelCacheKey = `${CHANNEL_PREFIX}${topic.channel}`;
-    const topicCacheKey = `${TOPIC_PREFIX}${_id}`;
-
+   
+    const channelCacheKey = `${CachePrefix.CHANNEL_PREFIX}${topic.channel?._id}`;
+    const topicCacheKey = `${CachePrefix.TOPIC_PREFIX}${_id}`;
+    await RedisHelper.updateTopicInChannel(topic.channel?._id, updatedTopic);
     await rabbitmqService.publishInvalidation(
       [
-        topicsAllChannelCacheKey,
-        createdChannelsCacheKey,
         channelCacheKey,
         topicCacheKey,
       ],
       "topic"
     );
+    await updatedTopic.populate([
+      { path: "channel", select: "name _id visibility" },
+      { path: "user", select: "name username _id logo color_logo" },
+    ]);
     return res.json({
       success: true,
       message: "Topic updated successfully.",
       topic: {
         ...updatedTopic.toObject(),
-        members: [myMembership],
+        members: [ownership],
       },
     });
   } catch (error) {
@@ -263,13 +312,19 @@ exports.fetch_topic_members = async function (req, res, next) {
     });
   }
   try {
-    const cacheKey = `${TOPICS_MEMBERS_PREFIX}${topicId}`;
-    const cachedMembers = await redisService.getCache(cacheKey);
-    if (cachedMembers) {
+    const ownership = await RedisHelper.getTopicMembership(user_id, topicId);
+    if(!ownership || (ownership.role !== "owner" && ownership.role !== "admin")){
+      return res.json({
+        success: false,
+        message: "You do not have permission to view this topic.",
+      });
+    }
+    const cachedMembers = await RedisHelper.getTopicMembers(topicId);
+    if (cachedMembers.length>0) {
       return res.json({
         success: true,
-        message: "Members fetched successfully",
-        members: cachedMembers,
+        message: "Members fetched successfully from cache",
+        members: cachedMembers || [],
       });
     }
     const topicMembers = await TopicMembership.find({
@@ -279,8 +334,8 @@ exports.fetch_topic_members = async function (req, res, next) {
       role: { $ne: "owner" },
     })
       .populate({ path: "user", select: "name username _id logo color_logo" })
-      .lean();
-    await redisService.setCache(cacheKey, topicMembers, 7200);
+      .lean();  
+      await RedisHelper.setTopicMembersHash(topicId, topicMembers);
     res.json({
       success: true,
       message: "Members fetched successfully",
@@ -291,6 +346,98 @@ exports.fetch_topic_members = async function (req, res, next) {
     res.json({
       success: false,
       message: "Error in fetching members",
+      error: error.message,
+    });
+  }
+};
+
+exports.fetch_topic_requests = async function (req, res, next) {
+  const { topicId } = req.body;
+  const user_id = res.locals.verified_user_id;
+  if (!topicId || !mongoose.Types.ObjectId.isValid(topicId) || !user_id) {
+    return res.json({
+      success: false,
+      message: "Invalid or missing topicId",
+    });
+  }
+  try {
+    const ownership = await RedisHelper.getTopicMembership(user_id, topicId);
+    if(!ownership || (ownership.role !== "owner" && ownership.role !== "admin")){
+      return res.json({
+        success: false,
+        message: "You do not have permission to view this topic.",
+      });
+    }
+    const cachedRequests = await RedisHelper.getTopicRequests(topicId);
+    if (cachedRequests.length>0) {
+      return res.json({
+        success: true,
+        message: "Requests fetched successfully from cache",
+        requests: cachedRequests || [],
+      });
+    }
+    const topicRequests = await TopicMembership.find({
+      topic: topicId,
+      user: { $ne: null },
+      status: "request", 
+      role: { $nin: ["owner","admin"] },
+    })
+      .populate([{ path: "user", select: "name username _id logo color_logo" },{path: "topic", select: "name _id"}])
+      .lean();
+    await RedisHelper.setTopicRequestsHash(topicId, topicRequests);
+    res.json({
+      success: true,
+      message: "Requests fetched successfully",
+      requests: topicRequests || [],
+    });
+  } catch (error) {
+    console.error("Error in fetching requests", error);
+    res.json({
+      success: false,
+      message: "Error in fetching requests",
+      error: error.message,
+    });
+  }
+};
+
+exports.remove_topic_member = async function (req, res, next) {
+  const user_id = res.locals.verified_user_id;
+  const { topicId, userId } = req.body;
+  if (!topicId || !userId) {
+    return res.json({
+      success: false,
+      message: "Invalid Topic ID or User ID",
+    });
+  }
+  try {
+    const ownership = await RedisHelper.getTopicMembership(user_id, topicId);
+    if (!ownership || (ownership.role !== "owner" && ownership.role !== "admin")) {
+      return res.json({
+        success: false,
+        message: "You don't have authority to remove this member.",
+      });
+    }
+    const membership = await TopicMembership.findOneAndDelete({
+      topic: topicId,
+      user: userId,
+      status: "joined",
+    });
+    await RedisHelper.removeUserFromTopic(topicId, userId);
+    await rabbitmqService.publishInvalidation(
+      [, `${CachePrefix.TOPIC_MEMBERSHIP_USER_PREFIX}${topicId}:${userId}`],
+      "topic"
+    );
+    return res.json({
+      success: true,
+      message: "Member removed from topic",
+      // topic: topic,
+      membership: membership,
+    });
+  } catch (error) {
+    console.error("Error in removing member:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error in removing member from channel",
       error: error.message,
     });
   }
@@ -319,32 +466,54 @@ exports.fetch_my_channel_joined_topics = async function (req, res, next) {
         select: "name _id editability visibility",
       })
       .lean();
-    const enrichedTopics = await Promise.allSettled(
-      topicMemberships.map(async (membership) => {
-        const topic = membership.topic;
-        if (!topic || !topic._id) return null;
+    const topicIds = topicMemberships
+      .map((m) => m.topic?._id?.toString())
+      .filter(Boolean);
 
-        const lastReadAt = membership.lastReadAt || new Date(0);
-
-        const unreadCount = await ChannelChat.countDocuments({
-          topic: topic._id,
-          createdAt: { $gt: lastReadAt },
-        });
-        return {
-          ...topic,
-          unreadCount,
-        };
-      })
+    const lastReadMap = Object.fromEntries(
+      topicMemberships.map((m) => [
+        m.topic?._id?.toString(),
+        m.lastReadAt || new Date(0),
+      ])
     );
+    const unreadCountsAgg = await ChannelChat.aggregate([
+      {
+        $match: {
+          topic: { $in: topicIds.filter(Boolean).map(id => new mongoose.Types.ObjectId(id)) },
+          createdAt: {
+            $gte: new Date(
+              Math.min(...Object.values(lastReadMap).map((d) => d.getTime()))
+            ),
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$topic",
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+    const unreadCountMap = Object.fromEntries(
+      unreadCountsAgg.map((item) => [item._id.toString(), item.count])
+    );
+    const enrichedTopics = topicMemberships.map((m) => {
+      const topic = m.topic;
+      if (!topic || !topic._id) return null;
 
-    const validTopics = enrichedTopics
-      .filter((r) => r.status === "fulfilled" && r.value)
-      .map((r) => r.value);
+      const topicId = topic._id.toString();
+      const unreadCount = unreadCountMap[topicId] || 0;
+
+      return {
+        ...topic,
+        unreadCount,
+      };
+    }).filter(Boolean);
 
     return res.json({
       success: true,
       message: "Topics fetched successfully",
-      topics: validTopics,
+      topics: enrichedTopics,
     });
   } catch (error) {
     console.error("Error in fetching topics:", error);
@@ -356,46 +525,42 @@ exports.fetch_my_channel_joined_topics = async function (req, res, next) {
   }
 };
 
-exports.fetch_all_channel_topics = async function (req, res, next) {
+
+
+exports.fetch_all_channel_topics = async function (req, res) {
   const { channelId } = req.body;
   const user_id = res.locals.verified_user_id;
 
-  if (!channelId || !mongoose.Types.ObjectId.isValid(channelId)) {
+  if (!channelId || !mongoose.Types.ObjectId.isValid(channelId) || !user_id) {
     return res.json({
       success: false,
-      message: "Invalid or missing channelId",
+      message: "Invalid userId or missing channelId",
     });
   }
-  if (!user_id) {
-    return res.json({
-      success: false,
-      message: "Invalid or missing userId",
-    });
-  }
+
   try {
-    const topicCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${channelId}`;
-    let topicDocs = await redisService.getCache(topicCacheKey);
-    let topicIds = [];
-    if (!topicDocs) {
-      const channel = await Channel.findById(channelId).select("topics").lean();
-      if (!channel || !channel.topics?.length) {
-        return res.json({
-          success: true,
-          message: "No topics found",
-          topics: [],
-        });
-      }
-      topicIds = channel.topics;
-      topicDocs = await Topic.find({ _id: { $in: topicIds } }).lean();
-      const topicMap = new Map(
-        topicDocs.map((topic) => [topic._id.toString(), topic])
-      );
-      topicDocs = topicIds
-        .map((id) => topicMap.get(id.toString()))
-        .filter(Boolean);
-      await redisService.setCache(topicCacheKey, topicDocs, 7200);
-    } else {
-      topicIds = topicDocs.map((t) => t._id);
+    const channel = await Channel.findById(channelId).select("topics").lean();
+    if (!channel || !channel.topics?.length) {
+      return res.json({
+        success: true,
+        message: "No topics found",
+        topics: [],
+      });
+    }
+
+    const topicIds = channel.topics.map(id => id.toString());
+
+    let topicDocs = await RedisHelper.getAllChannelTopics(channelId, topicIds);
+
+    if (!topicDocs || topicDocs.length === 0) {
+      const rawTopics = await Topic.find({ _id: { $in: topicIds } })
+        .select(TOPIC_BASIC_FIELDS)
+        .lean();
+
+      const topicMap = new Map(rawTopics.map(t => [t._id.toString(), t]));
+      topicDocs = topicIds.map(id => topicMap.get(id)).filter(Boolean);
+
+      await RedisHelper.setChannelTopicsHash(channelId, topicDocs);
     }
     const memberships = await TopicMembership.find({
       topic: { $in: topicIds },
@@ -403,31 +568,30 @@ exports.fetch_all_channel_topics = async function (req, res, next) {
       user: user_id,
     }).lean();
 
-    const membershipMap = new Map(
-      memberships.map((m) => [m.topic.toString(), m])
-    );
+    const membershipMap = new Map(memberships.map(m => [m.topic.toString(), m]));
 
-    const enrichedTopics = topicDocs.map((topic) => {
-      const myMembership = membershipMap.get(topic._id.toString());
-      return {
-        ...topic,
-        members: myMembership ? [myMembership] : [],
-      };
-    });
+    const enrichedTopics = topicDocs.map(topic => ({
+      ...topic,
+      members: membershipMap.has(topic._id.toString()) ? [membershipMap.get(topic._id.toString())] : [],
+    }));
+
     return res.json({
       success: true,
       message: "Topics fetched successfully",
       topics: enrichedTopics,
     });
+
   } catch (error) {
     console.error("Error in fetching topics", error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Error in fetching topics",
       error: error.message,
     });
   }
 };
+
+
 
 exports.fetch_topic = async function (req, res, next) {
   const { id } = req.body;
@@ -440,59 +604,17 @@ exports.fetch_topic = async function (req, res, next) {
     });
   }
   try {
-    const cacheKey = `${TOPIC_PREFIX}${id}`;
-    const cacheTopicMembersKey = `${TOPIC_MEMBERSHIP_PREFIX}${id}:${user_id}`;
-    const [cachedTopic, cachedMembership] = await Promise.all([
-      redisService.getCache(cacheKey),
-      redisService.getCache(cacheTopicMembersKey),
+    const cacheKey = `${CachePrefix.TOPIC_PREFIX}${id}`;
+    const [topic, myMembership] = await Promise.all([
+      RedisHelper.getOrCacheTopic(id, cacheKey),
+      RedisHelper.getTopicMembership(user_id, id),
     ]);
-
-    let myMembership = cachedMembership;
-    if (!cachedMembership) {
-      let channelId = cachedTopic?.channel;
-      if (!channelId) {
-        const topicData = await Topic.findById(id).select("channel").lean();
-        if (!topicData) {
-          return res.json({
-            success: false,
-            message: "No Topic found",
-          });
-        }
-        channelId = topicData.channel;
-      }
-      myMembership = await TopicMembership.findOne({
-        channel: channelId,
-        topic: id,
-        user: user_id,
-      }).lean();
-      if (myMembership) {
-        await redisService.setCache(cacheTopicMembersKey, myMembership, 3600);
-      }
-    }
-    if (cachedTopic) {
-      return res.json({
-        success: true,
-        message: "Topic fetched successfully from cache",
-        topic: {
-          ...cachedTopic,
-          members: [myMembership] || [],
-        },
-      });
-    }
-    const topic = await Topic.findById(id)
-      .populate([
-        { path: "user", select: "name username _id logo color_logo" },
-        { path: "channel", select: "_id name visibility" },
-      ])
-      .lean();
-
     if (!topic) {
       return res.json({
         success: false,
         message: "No Topic found",
       });
     }
-    await redisService.setCache(cacheKey, topic, 3600);
     return res.json({
       success: true,
       message: "Topic fetched successfully",
@@ -521,14 +643,15 @@ exports.delete_topic = async function (req, res, next) {
     });
   }
   try {
-    const topic = await Topic.findById(id).lean();
-    if (!topic || topic.user.toString() !== user_id.toString()) {
+    const ownership = await RedisHelper.getTopicMembership(user_id, id);
+    if(!ownership || (ownership.role !== "owner" && ownership.role !== "admin")){
       return res.json({
         success: false,
-        message: "Topic not found or you are not the owner.",
+        message: "You don't have authority to delete this topic.",
       });
-    }
-    await Topic.findByIdAndDelete(id);
+    };
+    const topic = await Topic.findByIdAndDelete(id);
+    console.log(topic);
     await Promise.all([
       TopicMembership.deleteMany({ topic: id }),
       ChannelChat.deleteMany({ topic: id }),
@@ -537,31 +660,39 @@ exports.delete_topic = async function (req, res, next) {
       Summary.deleteMany({ topic: id }),
       EventMembership.deleteMany({ topic: id }),
     ]);
-    const channel = await Channel.findById(topic.channel);
+    const channel = await Channel.findById(topic.channel).select("topics");
     if (channel) {
       channel.topics = channel.topics.filter(
         (topicId) => topicId.toString() !== id.toString()
       );
       await channel.save();
     }
-    const topicCacheKey = `${TOPIC_PREFIX}${id}`;
-    const topicsAllChannelCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${topic.channel}`;
-    const createdChannelsCacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
-    const channelCacheKey = `${CHANNEL_PREFIX}${topic.channel}`;
-    const topicMemberCacheKey = `${TOPICS_MEMBERS_PREFIX}${id}`;
-
+    const topicCacheKey = `${CachePrefix.TOPIC_PREFIX}${id}`;
+    const createdChannelsCacheKey = `${CachePrefix.CHANNELS_CREATED_PREFIX}${user_id}`;
+    const channelCacheKey = `${CachePrefix.CHANNEL_PREFIX}${topic.channel}`;
+    const topicMemberCacheKey = `${CachePrefix.TOPICS_MEMBERS_PREFIX}${id}`;
+    const topicRequestCacheKey = `${CachePrefix.TOPIC_REQUESTS_PREFIX}${id}`;
+    await Promise.all([
+      RedisHelper.decrementTopicsCount(topic.channel),
+      RedisHelper.removeTopicFromChannel(topic.channel, id)
+    ]);
+    let cacheKeys2=[];
+    if(topic.business){
+      cacheKeys2.push(`${CachePrefix.TOPIC_BUSINESS_REQUESTS_PREFIX}${topic.business}`);
+    }
     await rabbitmqService.publishInvalidation(
       [
         topicCacheKey,
-        topicsAllChannelCacheKey,
         createdChannelsCacheKey,
         channelCacheKey,
         topicMemberCacheKey,
+        topicRequestCacheKey,
+        ...cacheKeys2,
       ],
       "topic"
     );
     await chatRabbitmqService.publishInvalidation(
-      [`${TOPIC_MEMBERSHIP_PREFIX}${id}:*`],
+      [`${CachePrefix.TOPIC_MEMBERSHIP_USER_PREFIX}${id}:*`],
       "topic",
       "cache.delete.topic"
     );
@@ -585,18 +716,18 @@ exports.join_topic = async function (req, res, next) {
   const { topicId } = req.body;
 
   try {
-    const topic = await Topic.findById(topicId).lean();
+    const topic = await RedisHelper.getOrCacheTopic(topicId, `${CachePrefix.TOPIC_PREFIX}${topicId}`);
     if (!topic) {
       return res.json({
         success: false,
         message: "Topic not found.",
       });
     }
-    const existing = await TopicMembership.findOne({
-      channel: topic.channel,
-      topic: topicId,
-      user: user_id,
-    });
+    const [existing, user] = await Promise.all([
+    RedisHelper.getTopicMembership(user_id, topicId),
+    User.findById(user_id).select("email").lean(),
+    ]);
+
     if (existing) {
       if (existing.status === "joined") {
         return res.json({
@@ -614,14 +745,7 @@ exports.join_topic = async function (req, res, next) {
         });
       }
     }
-    const user = await User.findById(user_id).select("email").lean();
-
-    const channelMembership = await ChannelMembership.findOne({
-      channel: topic.channel,
-      user: user_id,
-    })
-      .select("status")
-      .lean();
+    const channelMembership = await RedisHelper.getChannelMembership(user_id, topic.channel?._id);
     if (!channelMembership || channelMembership.status === "request") {
       return res.json({
         success: false,
@@ -631,7 +755,7 @@ exports.join_topic = async function (req, res, next) {
       });
     }
 
-    if (topic.visibility === "paid" && topic.paywallPrice) {
+    if (topic.visibility === "paid" && topic.paywallPrice && channelMembership.role !== "owner" && channelMembership.role !== "admin") {
       return res.json({
         success: true,
         message: "This topic is paywalled. Please purchase the topic to join.",
@@ -642,22 +766,27 @@ exports.join_topic = async function (req, res, next) {
         joined: false,
       });
     }
-    if (topic.visibility === "anyone") {
+    if (topic.visibility === "anyone" || channelMembership.role==="owner" || channelMembership.role==="admin") {
       const membership = await TopicMembership.create({
-        channel: topic.channel,
+        channel: topic.channel?._id,
         topic: topicId,
         user: user_id,
         email: user.email,
         business: topic.business,
         status: "joined",
+        role: channelMembership.role,
       });
-      const cacheKey = `${TOPICS_MEMBERS_PREFIX}${topicId}`;
-      await rabbitmqService.publishInvalidation([cacheKey], "topic");
+      const request_membership  = membership.toObject();
+      await membership.populate([
+        { path: "user", select: "_id name username logo color_logo email" },
+        { path: "topic", select: "_id name" },
+      ]);
+      await RedisHelper.addUserToTopic(topicId, membership);
       return res.json({
         success: true,
         message: "Topic joined successfully.",
         joined: true,
-        membership: membership,
+        membership: request_membership,
         topic: topic,
       });
     } else if (topic.visibility === "invite") {
@@ -669,18 +798,20 @@ exports.join_topic = async function (req, res, next) {
         business: topic.business,
         status: "request",
       });
-      await rabbitmqService.publishInvalidation(
-        [
-          `${TOPICS_MEMBERS_PREFIX}${topicId}`,
-          `${TOPIC_MEMBERSHIP_PREFIX}${topicId}:${user_id}`,
-        ],
-        "topic"
-      );
+      const request_membership  = membership.toObject();
+      await membership.populate([
+        { path: "user", select: "_id name username logo color_logo email" },
+        { path: "topic", select: "_id name" },
+      ]);
+      await RedisHelper.addUserToTopicRequest(topicId, membership);
+      if(topic.business){
+        await RedisHelper.appendRequestToBusinessArray(`${CachePrefix.TOPIC_BUSINESS_REQUESTS_PREFIX}${topic.business}`, membership,3600);
+      }
       return res.json({
         success: true,
         message: "Request sent successfully. Please wait for approval.",
         joined: false,
-        membership: membership,
+        membership: request_membership,
         topic: topic,
       });
     }
@@ -709,29 +840,21 @@ exports.leave_topic = async function (req, res, next) {
     });
   }
   try {
-    const topic = await Topic.findById(topicId).select("channel _id").lean();
+    const topic = await RedisHelper.getOrCacheTopic(topicId, `${CachePrefix.TOPIC_PREFIX}${topicId}`);
     if (!topic) {
       return res.json({
         success: false,
         message: "No topic found.",
       });
     }
-    const membership = await TopicMembership.findOneAndDelete({
-      topic: topicId,
-      user: user_id,
-      channel: topic.channel,
-    });
-    const topicMemberCacheKey = `${TOPICS_MEMBERS_PREFIX}${topicId}`;
-    const topicCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${topic.channel}`;
-
-    await rabbitmqService.publishInvalidation(
-      [
-        topicMemberCacheKey,
-        topicCacheKey,
-        `${TOPIC_MEMBERSHIP_PREFIX}${topicId}:${user_id}`,
-      ],
-      "topic"
-    );
+    
+    const membership = await TopicMembership.findOneAndDelete({ topic: topicId, user: user_id });
+    
+    await RedisHelper.removeUserFromTopic(topicId, user_id);
+    const cacheKeys = [
+      `${CachePrefix.TOPIC_MEMBERSHIP_USER_PREFIX}${topicId}:${user_id}`,
+    ];
+    await rabbitmqService.publishInvalidation(cacheKeys, "topic");
     return res.json({
       success: true,
       topic: topic,
@@ -770,10 +893,7 @@ exports.mark_as_read = async function (req, res, next) {
         message: "No topic membership found",
       });
     }
-    await rabbitmqService.publishInvalidation(
-      [`${TOPIC_MEMBERSHIP_PREFIX}${topicId}:${user_id}`],
-      "topic"
-    );
+    await RedisHelper.updateLastRead(topicId, user_id, new Date());
     return res.json({
       success: true,
       message: "Marked as read",
@@ -801,35 +921,50 @@ exports.update_channel_topics_order = async function (req, res) {
   }
 
   try {
-    const channel = await Channel.findOne({ _id: channelId, user: user_id });
+    const [ownership , channel] = await Promise.all([
+      RedisHelper.getChannelMembership(user_id, channelId),
+      Channel.findById(channelId).select("topics").populate({
+        path: "topics",
+        select: TOPIC_BASIC_FIELDS,
+      }),
+    ]);
+    if(!ownership || (ownership.role !== "owner" && ownership.role !== "admin")){
+      return res.json({
+        success: false,
+        message: "You are not authorized to update topics order.",
+      });
+    }
     if (!channel) {
       return res.json({
         success: false,
         message: "Channel not found!",
       });
     }
-    const channelCacheKey = `${CHANNEL_PREFIX}${channelId}`;
-    const createdChannelsCacheKey = `${CHANNELS_CREATED_PREFIX}${user_id}`;
-    const topicCacheKey = `${TOPICS_ALL_CHANNEL_PREFIX}${channelId}`;
-    channel.topics = items.filter((item) => item._id);
-    await channel.save();
-    await channel.populate({
-      path: "topics",
-      select: "name _id visibility editability",
-    });
-    await rabbitmqService.publishInvalidation(
-      [channelCacheKey, createdChannelsCacheKey, topicCacheKey],
-      "topic"
-    );
 
+    const newOrder = items.map((item) => item._id).filter(Boolean).map(String);
+    const currentOrder = (channel.topics || []).map(id => id.toString());
+    const isSameOrder = newOrder.length === currentOrder.length && newOrder.every((id, i) => id === currentOrder[i]);
+    if(isSameOrder){
+      return res.json({
+        success: true,
+        message: "Topics are already in the same order!",
+        topics: channel.topics,
+        channelId: channelId,
+      });
+    }
+    const topicMap = new Map(channel.topics.map(t => [t._id.toString(), t]));
+    channel.topics = newOrder;
+    await channel.save();
+    const orderedTopics = newOrder.map(id => topicMap.get(id)).filter(Boolean);
+    await RedisHelper.setChannelTopicsHash(channelId, orderedTopics);
     return res.json({
       success: true,
       message: "Updated topics successfully!",
-      topics: channel.topics,
+      topics: orderedTopics,
       channelId: channelId,
     });
   } catch (err) {
-    return res.status(500).json({
+    return res.json({
       success: false,
       message: "Error updating topics",
       error: err.message,
@@ -842,44 +977,33 @@ exports.join_topic_invite = async function (req, res) {
   const { topicId, channelId, code } = req.body;
 
   try {
-    const [topic, user, alreadyExistChannelMembership, alreadyExists, channel] =
-      await Promise.all([
-        Topic.findById(topicId).lean(),
-        User.findById(user_id).select("email").lean(),
-        ChannelMembership.findOne({ channel: channelId, user: user_id }).lean(),
-        TopicMembership.findOne({
-          topic: topicId,
-          user: user_id,
-          channel: channelId,
-        }).lean(),
-        Channel.findById(channelId)
-          .populate([
-            { path: "topics", select: "name _id editability visibility" },
-            { path: "user", select: "name username _id logo color_logo" },
-          ])
-          .lean(),
-      ]);
+    const topic = await RedisHelper.getOrCacheTopic(topicId, `${CachePrefix.TOPIC_PREFIX}${topicId}`);
     if (!topic) {
       return res.json({
         success: false,
         message: "Topic not found.",
       });
     }
-    if (
-      alreadyExists &&
-      alreadyExists.status === "joined" &&
-      alreadyExistChannelMembership &&
-      alreadyExistChannelMembership.status === "joined"
-    ) {
+    const [user, channel, channelMembership, topicMembership] = await Promise.all([
+      User.findById(user_id).select("email").lean(),
+      RedisHelper.getOrCacheChannel(channelId, `${CachePrefix.CHANNEL_PREFIX}${channelId}`),
+      RedisHelper.getChannelMembership(user_id, channelId),
+      RedisHelper.getTopicMembership(user_id, topicId),
+    ]);
+
+    const isAlreadyIn = channelMembership?.status === "joined" && topicMembership?.status === "joined";
+    if (isAlreadyIn) {
       return res.json({
         success: true,
         message: "You are already a member of this topic.",
-        topic: topic,
-        membership: alreadyExists,
+        topic,
+        topicMembership: topicMembership,
         channel: channel,
+        channelMembership: channelMembership,
         joined: true,
       });
     }
+   
     const invite = await Invite.findOne({
       topic: topicId,
       code: code,
@@ -887,45 +1011,90 @@ exports.join_topic_invite = async function (req, res) {
     });
     if (
       !invite ||
-      invite.user.toString() !== topic.user._id.toString() ||
       invite.status === "expired" ||
       (invite.expire_time && invite.expire_time < new Date()) ||
       invite.usage_limit <= invite.used_by.length
     ) {
-      return res.json({
-        success: false,
-        message: "Invalid or expired invite code.",
-      });
+      return res.json({success: false,message: "Invalid or expired invite code."});
     }
     if (invite.used_by.includes(user_id)) {
-      return res.json({
-        success: false,
-        message: "You have already used this invite code.",
-      });
+      return res.json({success: false,message: "You have already used this invite code.",});
+    }
+    const inviterMembership = await RedisHelper.getTopicMembership(invite.user, topicId);
+    if (!inviterMembership || !["owner", "admin"].includes(inviterMembership.role)) {
+      return res.json({ success: false, message: "Invite code is not valid." });
     }
     invite.used_by.push(user_id);
     await invite.save();
+    const cacheKeys=[];
+    let channelNewMembership = channelMembership;
+    let topicNewMembership = topicMembership;
 
-    let channelMembership = null;
-    if (!alreadyExistChannelMembership) {
-      channelMembership = await ChannelMembership.create({
-        channel: channelId,
-        user: user_id,
-        business: topic.business,
-        email: user.email,
-        status: "joined",
-      });
+    if (!channelMembership || channelMembership.status !== "joined") {
+      const userCount = await RedisHelper.getUsersCount(channel.business, channelId);
+      const plan = await RedisHelper.getBusinessPlan(channel.business);
+      const userLimit = plan?.features?.userLimit || 30;
+
+      if (userCount >= userLimit) {
+        if (channel.business) {
+          await emailRabbitmqService.sendNotificationMessage({
+            type: "admin_notification",
+            business: channel.business,
+            buttonText: "",
+            buttonLink: `/account/billing`,
+            content: "You have reached the maximum number of users in your business. Upgrade your plan to add more.",
+          });
+        }
+        return res.json({
+          success: true,
+          limitReached: true,
+          joined: false,
+          isBusiness: !!channel.business,
+          message: "Channel room is full. Contact administrator for access.",
+        });
+      }
+      let updatedChannelMembership = channelMembership;
+      if (channelMembership?.status === "request") {
+        channelMembership.status = "joined";
+        await channelMembership.save();
+        if (channel.business) {
+          await RedisHelper.removeRequestFromBusinessArray(`${CachePrefix.CHANNEL_BUSINESS_REQUESTS_PREFIX}${channel.business}`, channelMembership._id);
+        }
+        cacheKeys.push(`${CachePrefix.CHANNEL_MEMBERSHIP_USER_PREFIX}${channelId}:${user_id}`);
+        updatedChannelMembership = channelMembership;
+      } else if (!channelMembership) {
+        updatedChannelMembership = await ChannelMembership.create({
+          channel: channelId,
+          user: user_id,
+          business: topic.business,
+          email: user.email,
+          status: "joined",
+        });
+      }
+      channelNewMembership = updatedChannelMembership.toObject();
+      await updatedChannelMembership.populate([
+        { path: "user", select: "_id name username logo color_logo email" },
+        { path: "channel", select: "_id name logo" },
+      ]);
+      await RedisHelper.addUserToChannel(channelId, updatedChannelMembership);
+      if (channel.business) {
+        await RedisHelper.addUserToBusiness(channel.business, user_id);
+      }
     }
-    if (
-      alreadyExistChannelMembership &&
-      alreadyExistChannelMembership.status === "request"
-    ) {
-      alreadyExistChannelMembership.status = "joined";
-      channelMembership = await alreadyExistChannelMembership.save();
+    let finalTopicMembership = topicMembership;
+    if (topicMembership?.status === "request") {
+      topicMembership.status = "joined";
+      await topicMembership.save();
+      cacheKeys.push(`${CachePrefix.TOPIC_MEMBERSHIP_USER_PREFIX}${topicId}:${user_id}`);
+      finalTopicMembership = topicMembership;
+      topicNewMembership = topicMembership;
+      if (topic.business) {
+        await RedisHelper.removeRequestFromBusinessArray(`${CachePrefix.TOPIC_BUSINESS_REQUESTS_PREFIX}${topic.business}`, topicMembership._id);
+      }
     }
-    let topicmembership = null;
-    if (!alreadyExists) {
-      topicmembership = await TopicMembership.create({
+
+    if (!finalTopicMembership || finalTopicMembership.status !== "joined") {
+      const newMembership = await TopicMembership.create({
         topic: topicId,
         user: user_id,
         email: user.email,
@@ -933,28 +1102,23 @@ exports.join_topic_invite = async function (req, res) {
         channel: channelId,
         status: "joined",
       });
+      topicNewMembership = newMembership.toObject();
+      await newMembership.populate([
+        { path: "user", select: "_id name username logo color_logo email" },
+        { path: "topic", select: "_id name" },
+      ]);
+      await RedisHelper.addUserToTopic(topicId, newMembership);
+      finalTopicMembership = newMembership;
     }
-    if (alreadyExists && alreadyExists.status === "request") {
-      alreadyExists.status = "joined";
-      topicmembership = await alreadyExists.save();
-    }
-    await rabbitmqService.publishInvalidation(
-      [
-        `${CHANNELS_MEMBERS_PREFIX}${channelId}`,
-        `${CHANNELS_MEMBERSHIP_PREFIX}${channelId}:${user_id}`,
-        `${CHANNELS_MEMBERS_COUNT_PREFIX}${channelId}`,
-        `${TOPICS_MEMBERS_PREFIX}${topicId}`,
-        `${TOPIC_MEMBERSHIP_PREFIX}${topicId}:${user_id}`,
-      ],
-      "topic"
-    );
+    await rabbitmqService.publishInvalidation(cacheKeys, "topic");
 
     return res.json({
       success: true,
       message: "Topic joined successfully.",
-      topic: topic,
-      membership: topicmembership,
+      topic,
+      topicMembership: topicNewMembership,
       channel: channel,
+      channelMembership: channelNewMembership,
       joined: true,
     });
   } catch (error) {
@@ -972,27 +1136,44 @@ exports.accept_topic_request = async function (req, res, next) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const topic = await Topic.findById(topicId)
-      .select("user _id channel name")
-      .populate([
-        { path: "channel", select: "_id name logo" },
-        { path: "user", select: "_id username" },
-      ])
-      .lean();
-    if (!topic || topic.user._id.toString() !== user_id.toString()) {
+    const [ownership,topic] = await Promise.all([
+      RedisHelper.getTopicMembership(user_id, topicId),
+      RedisHelper.getOrCacheTopic(topicId, `${CachePrefix.TOPIC_PREFIX}${topicId}`),
+    ]);
+    if(!ownership || (ownership.role !== "owner" && ownership.role !== "admin")){
       return res.json({
         success: false,
-        message: "No topic found or you are not the owner.",
+        message: "You are not authorized to update roles.",
       });
     }
-    await TopicMembership.findOneAndUpdate(
+    if(!topic){
+      return res.json({
+        success: false,
+        message: "Topic not found.",
+      });
+    }
+    const membership = await TopicMembership.findOneAndUpdate(
       { topic: topicId, user: userId, status: "request" },
-      { status: "joined" },
+      { status: "joined" , business: topic.business || null},
       { new: true }
-    ).lean();
-    const membersCacheKey = `${TOPICS_MEMBERS_PREFIX}${topicId}`;
+    );
+    if(!membership){
+      return res.json({
+        success: false,
+        message: "No pending request found for this user in the topic.",
+      });
+    }
+    await RedisHelper.removeUserFromTopicRequest(topicId, userId);
+    if(topic.business){
+      await RedisHelper.removeRequestFromBusinessArray(`${CachePrefix.TOPIC_BUSINESS_REQUESTS_PREFIX}${topic.business}`, membership._id);
+    }
+    await membership.populate([
+      { path: "user", select: "_id name username logo color_logo email" },
+      { path: "topic", select: "_id name" },
+    ]);
+    await RedisHelper.addUserToTopic(topicId, membership);
     await rabbitmqService.publishInvalidation(
-      [membersCacheKey, `${TOPIC_MEMBERSHIP_PREFIX}${topicId}:${user_id}`],
+      [`${CachePrefix.TOPIC_MEMBERSHIP_USER_PREFIX}${topicId}:${user_id}`],
       "topic"
     );
     if (email && email !== "") {
@@ -1031,11 +1212,14 @@ exports.decline_topic_request = async function (req, res, next) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const topic = await Topic.findById(topicId).select("user _id").lean();
-    if (!topic || topic.user.toString() !== user_id.toString()) {
+    const [ownership,topic] = await Promise.all([
+      RedisHelper.getTopicMembership(user_id, topicId),
+      RedisHelper.getOrCacheTopic(topicId, `${CachePrefix.TOPIC_PREFIX}${topicId}`),
+    ]);
+    if(!ownership || (ownership.role !== "owner" && ownership.role !== "admin")){
       return res.json({
         success: false,
-        message: "No topic found or you are not the owner.",
+        message: "You are not authorized to update roles.",
       });
     }
     const existingRequest = await TopicMembership.findOne({
@@ -1044,11 +1228,17 @@ exports.decline_topic_request = async function (req, res, next) {
       status: "request",
     });
     if (existingRequest) {
+      await RedisHelper.removeUserFromTopicRequest(topicId, userId);
+      if(topic.business){
+        await RedisHelper.removeRequestFromBusinessArray(`${CachePrefix.TOPIC_BUSINESS_REQUESTS_PREFIX}${topic.business}`, existingRequest._id);
+      }
       await existingRequest.deleteOne();
     }
-    const membersCacheKey = `${TOPICS_MEMBERS_PREFIX}${topicId}`;
+    if(topic.business){
+      await RedisHelper.removeRequestFromBusinessArray(`${CachePrefix.TOPIC_BUSINESS_REQUESTS_PREFIX}${topic.business}`, existingRequest._id);
+    }
     await rabbitmqService.publishInvalidation(
-      [membersCacheKey, `${TOPIC_MEMBERSHIP_PREFIX}${topicId}:${user_id}`],
+      [`${CachePrefix.TOPIC_MEMBERSHIP_USER_PREFIX}${topicId}:${user_id}`],
       "topic"
     );
     return res.json({

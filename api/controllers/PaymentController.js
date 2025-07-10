@@ -15,6 +15,8 @@ var Transaction = mongoose.model("Transaction");
 var Event = mongoose.model("Event");
 const chatRabbitmqService = require("../services/chatRabbitmqService");
 const rabbitmqService = require("../services/rabbitmqService");
+const emailRabbitmqService = require("../services/emailRabbitmqService");
+const RedisHelper = require("../../utils/redisHelpers");
 const linkUserMemberships = require("../../utils/linkMembership");
 const redisService = require("../services/redisService");
 const crypto = require("crypto");
@@ -24,20 +26,9 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-const CHANNELS_MEMBERS_PREFIX = "channels:members:";
-const CHANNELS_MEMBERS_COUNT_PREFIX = "channels:members:count:";
-
-const EVENT_MEMBERSHIP_PREFIX = "event:membership:";
-const TOPICS_MEMBERS_PREFIX = "topics:members:";
-
 const BUSINESS_PREFIX = "embed:business:";
 
 const makeChannelJoin = async (channelId, user, channel) => {
-  const cacheKeys = [
-    `${CHANNELS_MEMBERS_PREFIX}${channelId}`,
-    `${CHANNELS_MEMBERS_COUNT_PREFIX}${channelId}`,
-  ];
-
   const membership = await ChannelMembership.create({
     channel: channelId,
     user: user._id,
@@ -45,6 +36,9 @@ const makeChannelJoin = async (channelId, user, channel) => {
     business: channel.business || null,
     status: "joined",
   });
+  if(channel.business){
+    await RedisHelper.addUserToBusiness(channel.business, user._id);
+  }
 
   const publicTopics = channel.topics.filter((t) => t.visibility === "anyone");
   const topicIds = publicTopics.map((t) => t._id);
@@ -64,19 +58,26 @@ const makeChannelJoin = async (channelId, user, channel) => {
     }));
 
     await TopicMembership.bulkWrite(bulkOps);
-    const topicCacheKeys = topicIds.map(
-      (id) => `${TOPICS_MEMBERS_PREFIX}${id}`
-    );
-    cacheKeys.push(...topicCacheKeys);
+    await emailRabbitmqService.sendTopicMembershipRedisSyncJob({
+      topicIds: topicIds,
+      userId: user._id,
+    });
+    
+   
   }
+    const request_membership  = membership.toObject();
+    await membership.populate([
+        { path: "user", select: "_id name username logo color_logo email" },
+        { path: "channel", select: "_id name logo" },
+      ]);
+    await RedisHelper.addUserToChannel(channelId,membership);
   const data = {
     channel: {
       ...channel,
       topics: publicTopics,
     },
-    cacheKeys: cacheKeys,
     topics: topicIds,
-    membership: membership,
+    membership: request_membership,
     joined: true,
     joinStatus: "first",
   };
@@ -84,7 +85,6 @@ const makeChannelJoin = async (channelId, user, channel) => {
 };
 
 const makeTopicJoin = async (topic, user) => {
-  let cacheKeys = [];
   const membership = await TopicMembership.create({
     channel: topic.channel,
     topic: topic._id,
@@ -93,19 +93,21 @@ const makeTopicJoin = async (topic, user) => {
     business: topic.business,
     status: "joined",
   });
-  const cacheKey = `${TOPICS_MEMBERS_PREFIX}${topic._id}`;
-  cacheKeys = [cacheKey];
-  const data = {
-    topic: topic,
-    membership: membership,
-    joined: true,
-    cacheKeys: cacheKeys,
-  };
+  const request_membership  = membership.toObject();
+      await membership.populate([
+        { path: "user", select: "_id name username logo color_logo email" },
+        { path: "topic", select: "_id name" },
+      ]);
+    await RedisHelper.addUserToTopic(topic._id, membership);
+    const data = {
+      topic: topic,
+      membership: request_membership,
+      joined: true,
+    };
   return data;
 };
 
 const makeEventJoin = async (event, user) => {
-  let cacheKeys = [`${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${user._id}`];
   const membership = await EventMembership.create({
     event: event._id,
     user: user._id,
@@ -113,11 +115,14 @@ const makeEventJoin = async (event, user) => {
     status: "joined",
     business: event.business,
   });
+  await Promise.all([
+    RedisHelper.addUserEventMembership(event.topic, user._id, membership),
+    RedisHelper.addMemberToEvent(event._id,membership),
+  ]);
   const data = {
     event: event,
     joined: true,
     membership: membership,
-    cacheKeys: cacheKeys,
   };
   return data;
 };
@@ -144,7 +149,6 @@ exports.verify_payment = async function (req, res) {
       message: "Invalid signature",
     });
   }
-  let cacheKeys = [];
   let paymentDetails = {};
   try {
     paymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
@@ -179,6 +183,7 @@ exports.verify_payment = async function (req, res) {
   };
 
   let joinData = {};
+  const cacheKeys = [];
 
   if (txn.type === "subscription") {
     let business = await Business.findOne({ user_id: user_id }).select(
@@ -227,9 +232,6 @@ exports.verify_payment = async function (req, res) {
     if (channel) {
       txnUpdate.business = channel.business || null;
       const data = await makeChannelJoin(channel._id, user, channel);
-      if (data.cacheKeys.length) {
-        cacheKeys.push(...data.cacheKeys);
-      }
       joinData = data;
     }
   } else if (txn.type === "topic") {
@@ -239,9 +241,6 @@ exports.verify_payment = async function (req, res) {
     if (topic) {
       txnUpdate.business = topic.business || null;
       const data = await makeTopicJoin(topic, user);
-      if (data.cacheKeys.length) {
-        cacheKeys.push(...data.cacheKeys);
-      }
       joinData = data;
     }
   } else if (txn.type === "event") {
@@ -251,9 +250,7 @@ exports.verify_payment = async function (req, res) {
     if (event) {
       txnUpdate.business = event.business || null;
       const data = await makeEventJoin(event, user);
-      if (data.cacheKeys.length) {
-        cacheKeys.push(...data.cacheKeys);
-      }
+      
       joinData = data;
     }
   }

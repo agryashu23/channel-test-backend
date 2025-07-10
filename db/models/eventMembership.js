@@ -6,6 +6,17 @@ const EventMembershipSchema = new Schema({
     event: { type: mongoose.Schema.Types.ObjectId, ref: "Event", required:true },
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required:true },
     topic: { type: mongoose.Schema.Types.ObjectId, ref: "Topic", required:true },
+    business: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Business",
+      default: null,
+      required: false,
+    },
+    role: {
+      type: String,
+      enum: ["admin", "member", "owner"],
+      default: "member",
+    },
     status: { 
         type: String, 
         enum: ["joined", "request"], 

@@ -31,6 +31,11 @@ var EventSchema = new Schema(
       enum: ["online", "offline"],
       default: "offline",
     },
+    visibility: {
+      type: String,
+      enum: ["anyone", "topic"],
+      default: "anyone",
+    },
     name: {
       type: String,
       required: false,

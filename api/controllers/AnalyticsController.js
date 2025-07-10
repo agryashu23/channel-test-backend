@@ -13,23 +13,33 @@ var DMRoom = mongoose.model("DMRoom");
 var DMChat = mongoose.model("DMChat");
 var Business = mongoose.model("Business");
 const redisService = require("../services/redisService");
+const redisClient = require("../../utils/redisClient");
+const CachePrefix = require("../../utils/prefix");
 
 const ANALYTICS_PREFIX = "analytics:";
 
 exports.fetch_total_users = async function (req, res) {
   const user_id = res.locals.verified_user_id;
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
       return res.json({ success: false, message: "Business not found" });
     }
-    const cacheKey = `${ANALYTICS_PREFIX}${business._id}:total_users`;
-    const cachedData = await redisService.getCache(cacheKey);
-    if (cachedData) {
-      return res.json({ success: true, total_users: cachedData });
+    const cacheKey = `${CachePrefix.BUSINESS_USERS_COUNT_PREFIX}${business._id}`;
+    const totalUsersCache = await redisClient.scard(cacheKey);
+    if (totalUsersCache) {
+      return res.json({
+        success: true,
+        total_users: totalUsersCache,
+      });
     }
-    const total_users = await ChannelMembership.countDocuments({ business: business._id });
-    await redisService.setCache(cacheKey, total_users,3600);
+    const userIds = await ChannelMembership.distinct("user", {
+      business: business._id,
+      status: "joined",
+    });
+    const total_users = userIds.length;
     return res.json({
       success: true,
       message: "Total users fetched",
@@ -37,16 +47,19 @@ exports.fetch_total_users = async function (req, res) {
     });
   } catch (error) {
     console.error("Error fetching total users:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
-
 
 exports.fetch_total_chats = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({user:user_id}).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
       return res.json({ success: false, message: "Business not found" });
     }
@@ -56,8 +69,10 @@ exports.fetch_total_chats = async function (req, res) {
     if (cachedData) {
       return res.json({ success: true, total_chats: cachedData });
     }
-    const total_chats = await ChannelChat.countDocuments({ business: businessId });
-    await redisService.setCache(cacheKey, total_chats,3600);
+    const total_chats = await ChannelChat.countDocuments({
+      business: businessId,
+    });
+    await redisService.setCache(cacheKey, total_chats, 3600);
     return res.json({ success: true, total_chats });
   } catch (error) {
     console.error("Error fetching total chats:", error);
@@ -72,62 +87,70 @@ exports.fetch_active_users = async function (req, res) {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
-    const cacheKey = `${ANALYTICS_PREFIX}${businessId}:active_users`;
+    const cacheKey = `${ANALYTICS_PREFIX}${business._id}:active_users`;
     const cachedData = await redisService.getCache(cacheKey);
     if (cachedData) {
       return res.json({ success: true, data: cachedData });
     }
-    const data = await AnalyticsSnapshot.aggregate([
+    const data = await Analytics.aggregate([
       {
         $match: {
           business: business._id,
-          createdAt: { $gte: sevenDaysAgo }
-        }
+          createdAt: { $gte: sevenDaysAgo },
+        },
       },
       {
         $group: {
           _id: {
             day: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-            user: "$user"
-          }
-        }
+            user: "$user",
+          },
+        },
       },
       {
         $group: {
           _id: "$_id.day",
-          activeUsers: { $sum: 1 }
-        }
+          activeUsers: { $sum: 1 },
+        },
       },
       { $sort: { _id: 1 } },
       {
         $project: {
           date: "$_id",
           activeUsers: 1,
-          _id: 0
-        }
-      }
+          _id: 0,
+        },
+      },
     ]);
-    await redisService.setCache(cacheKey, data,3600);
+    await redisService.setCache(cacheKey, data, 3600);
     return res.json({ success: true, data });
   } catch (error) {
     console.error("Error fetching active users chart:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
-
-
 
 exports.fetch_new_joins_chart = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
     const cacheKey = `${ANALYTICS_PREFIX}${businessId}:new_joins`;
     const cachedData = await redisService.getCache(cacheKey);
@@ -162,11 +185,13 @@ exports.fetch_new_joins_chart = async function (req, res) {
         },
       },
     ]);
-    await redisService.setCache(cacheKey, data,3600);
+    await redisService.setCache(cacheKey, data, 3600);
     return res.json({ success: true, new_joins: data });
   } catch (err) {
     console.error("Error generating new joining chart:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
 
@@ -174,9 +199,13 @@ exports.fetch_user_interaction_chart = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
     const cacheKey = `${ANALYTICS_PREFIX}${businessId}:user_interaction`;
     const cachedData = await redisService.getCache(cacheKey);
@@ -203,7 +232,7 @@ exports.fetch_user_interaction_chart = async function (req, res) {
       {
         $group: {
           _id: "$_id.day",
-          users: { $sum: 1 }, 
+          users: { $sum: 1 },
         },
       },
       {
@@ -217,11 +246,13 @@ exports.fetch_user_interaction_chart = async function (req, res) {
         },
       },
     ]);
-    await redisService.setCache(cacheKey, data,3600);
+    await redisService.setCache(cacheKey, data, 3600);
     return res.json({ success: true, chart: data });
   } catch (err) {
     console.error("Error generating user interaction chart:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
 
@@ -229,9 +260,13 @@ exports.fetch_most_active_topics = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
     const cacheKey = `${ANALYTICS_PREFIX}${businessId}:most_active_topic_per_day`;
     const cachedData = await redisService.getCache(cacheKey);
@@ -299,11 +334,13 @@ exports.fetch_most_active_topics = async function (req, res) {
         $sort: { date: 1 },
       },
     ]);
-    await redisService.setCache(cacheKey, data,3600);
+    await redisService.setCache(cacheKey, data, 3600);
     return res.json({ success: true, topics: data });
   } catch (err) {
     console.error("Error fetching most active topic per day:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
 
@@ -311,9 +348,13 @@ exports.fetch_most_active_users = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
     const cacheKey = `${ANALYTICS_PREFIX}${businessId}:most_active_users`;
     const cachedData = await redisService.getCache(cacheKey);
@@ -358,22 +399,27 @@ exports.fetch_most_active_users = async function (req, res) {
         },
       },
     ]);
-    await redisService.setCache(cacheKey, data,3600);
+    await redisService.setCache(cacheKey, data, 3600);
     return res.json({ success: true, users: data });
   } catch (err) {
     console.error("Error fetching most active users:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
-
 
 exports.fetch_least_active_topics = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
     const cacheKey = `${ANALYTICS_PREFIX}${businessId}:least_active_topics`;
     const cachedData = await redisService.getCache(cacheKey);
@@ -397,14 +443,16 @@ exports.fetch_least_active_topics = async function (req, res) {
       },
     ]);
 
-    const topicChatMap = new Map(chatCounts.map(doc => [String(doc._id), doc.chatCount]));
+    const topicChatMap = new Map(
+      chatCounts.map((doc) => [String(doc._id), doc.chatCount])
+    );
 
     const allTopics = await Topic.find({ business: business._id })
       .populate("channel", "name")
       .select("name channel")
       .lean();
 
-    const topicData = allTopics.map(topic => ({
+    const topicData = allTopics.map((topic) => ({
       topicId: topic._id,
       topicName: topic.name,
       channelName: topic.channel?.name || "Unknown",
@@ -413,22 +461,27 @@ exports.fetch_least_active_topics = async function (req, res) {
 
     topicData.sort((a, b) => a.chatCount - b.chatCount);
     const leastActiveTopics = topicData.slice(0, 10);
-    await redisService.setCache(cacheKey, leastActiveTopics,3600 );
+    await redisService.setCache(cacheKey, leastActiveTopics, 3600);
     return res.json({ success: true, topics: leastActiveTopics });
   } catch (err) {
     console.error("Error fetching least active topics:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
-
 
 exports.fetch_unseen_invites = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
     const cacheKey = `${ANALYTICS_PREFIX}${businessId}:unseen_invites`;
     const cacheKey2 = `${ANALYTICS_PREFIX}${businessId}:inactive_joins`;
@@ -478,7 +531,12 @@ exports.fetch_unseen_invites = async function (req, res) {
       if (t._id === "request") topicUnseenInvites = t.count;
       if (t._id === "processing") topicInactiveJoins = t.count;
     }
-    await redisService.setCache(cacheKey, {channelUnseenInvites, channelInactiveJoins, topicUnseenInvites, topicInactiveJoins});
+    await redisService.setCache(cacheKey, {
+      channelUnseenInvites,
+      channelInactiveJoins,
+      topicUnseenInvites,
+      topicInactiveJoins,
+    });
     return res.json({
       success: true,
       channelUnseenInvites,
@@ -488,18 +546,23 @@ exports.fetch_unseen_invites = async function (req, res) {
     });
   } catch (err) {
     console.error("Error fetching invite/join summary:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
-
 
 exports.fetch_media_shared_chart = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
     const cacheKey = `${ANALYTICS_PREFIX}${businessId}:media_shared_chart`;
     const cachedData = await redisService.getCache(cacheKey);
@@ -532,22 +595,27 @@ exports.fetch_media_shared_chart = async function (req, res) {
         },
       },
     ]);
-    await redisService.setCache(cacheKey, data,3600);
+    await redisService.setCache(cacheKey, data, 3600);
     return res.json({ success: true, data });
   } catch (err) {
     console.error("Error fetching media shared chart:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
-
 
 exports.fetch_poll_interaction = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
     if (!business) {
-      return res.status(404).json({ success: false, message: "Business not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     }
     const cacheKey2 = `${ANALYTICS_PREFIX}${businessId}:poll_interaction`;
     const cachedData = await redisService.getCache(cacheKey2);
@@ -558,7 +626,9 @@ exports.fetch_poll_interaction = async function (req, res) {
     const polls = await Poll.find({
       business: business._id,
       createdAt: { $gte: since },
-    }).select("createdAt responses anonymousResponses question").lean();
+    })
+      .select("createdAt responses anonymousResponses question")
+      .lean();
 
     const totalPolls = polls.length;
     let totalResponses = 0;
@@ -566,7 +636,8 @@ exports.fetch_poll_interaction = async function (req, res) {
 
     for (const poll of polls) {
       const date = new Date(poll.createdAt).toISOString().slice(0, 10);
-      const responseCount = (poll.responses?.length || 0) + (poll.anonymousResponses?.length || 0);
+      const responseCount =
+        (poll.responses?.length || 0) + (poll.anonymousResponses?.length || 0);
       totalResponses += responseCount;
       responseChartMap[date] = (responseChartMap[date] || 0) + responseCount;
     }
@@ -575,7 +646,11 @@ exports.fetch_poll_interaction = async function (req, res) {
       .map(([date, count]) => ({ date, count }))
       .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    await redisService.setCache(cacheKey2, {totalPolls, totalResponses, responseChart},3600);
+    await redisService.setCache(
+      cacheKey2,
+      { totalPolls, totalResponses, responseChart },
+      3600
+    );
     return res.json({
       success: true,
       totalPolls,
@@ -584,17 +659,23 @@ exports.fetch_poll_interaction = async function (req, res) {
     });
   } catch (err) {
     console.error("Error fetching poll analytics:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
-
 
 exports.fetch_event_analytics_summary = async function (req, res) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const business = await Business.findOne({ user: user_id }).select("_id").lean();
-    if (!business) return res.status(404).json({ success: false, message: "Business not found" });
+    const business = await Business.findOne({ user: user_id })
+      .select("_id")
+      .lean();
+    if (!business)
+      return res
+        .status(404)
+        .json({ success: false, message: "Business not found" });
     const cacheKey = `${ANALYTICS_PREFIX}${businessId}:event_analytics_summary`;
     const cachedData = await redisService.getCache(cacheKey);
     if (cachedData) {
@@ -635,8 +716,12 @@ exports.fetch_event_analytics_summary = async function (req, res) {
     const joinChart = Object.entries(joinChartMap)
       .map(([date, joins]) => ({ date, joins }))
       .sort((a, b) => new Date(a.date) - new Date(b.date));
-    
-    await redisService.setCache(cacheKey, {totalEvents: events.length, totalJoins, joinChart, eventBreakdown},3600);
+
+    await redisService.setCache(
+      cacheKey,
+      { totalEvents: events.length, totalJoins, joinChart, eventBreakdown },
+      3600
+    );
     return res.json({
       success: true,
       totalEvents: events.length,
@@ -646,10 +731,11 @@ exports.fetch_event_analytics_summary = async function (req, res) {
     });
   } catch (err) {
     console.error("Error fetching event analytics:", err);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 };
-
 
 // exports.pricing_interest = async function (req, res) {
 //   try {

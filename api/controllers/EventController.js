@@ -5,9 +5,13 @@ var Event = mongoose.model("Event");
 var ChannelChat = mongoose.model("ChannelChat");
 var Poll = mongoose.model("Poll");
 var Event = mongoose.model("Event");
+var PollVote = mongoose.model("PollVote");
 var Topic = mongoose.model("Topic");
 var Transaction = mongoose.model("Transaction");
 var EventMembership = require("../../db/models/eventMembership");
+var TopicMembership = require("../../db/models/topicMembership");
+var RedisHelper = require("../../utils/redisHelpers");
+const { CachePrefix } = require("../../utils/prefix");
 
 const { uploadSingleImage } = require("../aws/uploads/Images");
 const axios = require("axios");
@@ -18,20 +22,15 @@ const chatRabbitmqService = require("../services/chatRabbitmqService");
 const emailRabbitmqService = require("../services/emailRabbitmqService");
 const redisService = require("../services/redisService");
 
-const EVENT_PREFIX = "event:";
-const TOPIC_EVENT_PREFIX = "topic:event:";
-const EVENT_MEMBERSHIP_PREFIX = "event:membership:";
-const EVENT_MEMBERS_PREFIX = "event:members:";
-
 const POLL_PREFIX = "poll:";
 const TOPIC_POLL_PREFIX = "topic:poll:";
 
 const CHAT_TOPIC_PREFIX = "topic_chats:";
 
 const EVENT_SELECT_FIELDS =
-  "_id name user joining startDate endDate startTime endTime locationText location paywallPrice cover_image timezone type meet_url createdAt";
+  "_id name user joining startDate endDate startTime endTime locationText visibility location paywallPrice cover_image timezone type meet_url createdAt";
 const POLL_SELECT_FIELDS =
-  "_id question options showResults multipleChoice createdAt";
+  "_id name question choices showResults visibility type createdAt";
 
 async function getLatLngFromPlaceId(placeId) {
   const apiKey = process.env.MAPS_API_KEY;
@@ -60,6 +59,7 @@ exports.create_chat_event = async function (req, res) {
     startTime,
     endTime,
     locationText,
+    visibility,
     paywallPrice,
     location,
     cover_image,
@@ -72,19 +72,60 @@ exports.create_chat_event = async function (req, res) {
   let imageUrl = null;
 
   try {
-    const cacheKey = `${TOPIC_EVENT_PREFIX}${topic}`;
     const chatCacheKey = `${CHAT_TOPIC_PREFIX}${topic}:latest`;
     if (req.file) {
       imageUrl = await uploadSingleImage(req.file, "event");
     } else if (cover_image) {
       imageUrl = cover_image;
     }
-    const topicData = await Topic.findById(topic);
+    const [topicData, topicMembership] = await Promise.all([
+      Topic.findById(topic),
+      RedisHelper.getTopicMembership(user_id, topic),
+    ]);
     if (!topicData) {
       return res.json({
         success: false,
         message: "Topic not found",
       });
+    }
+    if (
+      !topicMembership ||
+      (topicMembership.role !== "admin" && topicMembership.role !== "owner")
+    ) {
+      return res.json({
+        success: false,
+        message: "You don't have permission to create event in this topic.",
+      });
+    }
+
+    if (joining === "paid") {
+      const [channel, myPlan] = await Promise.all([
+        RedisHelper.getOrCacheChannel(
+          topicData.channel,
+          `${CachePrefix.CHANNEL_PREFIX}${topicData.channel}`
+        ),
+        RedisHelper.getBusinessPlan(topicData.business),
+      ]);
+      if (!myPlan || !myPlan.features?.paidEvents) {
+        if (topicData.business) {
+          await emailRabbitmqService.sendNotificationMessage({
+            type: "admin_notification",
+            business: topicData.business,
+            buttonText: "",
+            buttonLink: `/account/billing`,
+            content: `You don't have permission to create paid events in this channel. Upgrade your plan to add more.`,
+          });
+        }
+
+        return res.json({
+          success: true,
+          isBusiness: !!topicData.business,
+          limitReached: true,
+          username: channel?.user?.username,
+          message:
+            "You don't have permission to create paid events in this channel. Upgrade your plan to add more.",
+        });
+      }
     }
     let parsedLocation = location;
     if (parsedLocation.includes("place_id=")) {
@@ -95,7 +136,7 @@ exports.create_chat_event = async function (req, res) {
       }
     }
 
-    const event_data = {
+    const event = await Event.create({
       user: user_id,
       business: topicData.business,
       name,
@@ -108,6 +149,7 @@ exports.create_chat_event = async function (req, res) {
       locationText,
       location: parsedLocation,
       paywallPrice,
+      visibility,
       topic,
       joined_users: [],
       requested_users: [],
@@ -115,28 +157,38 @@ exports.create_chat_event = async function (req, res) {
       timezone,
       type,
       meet_url,
-    };
-    const event = await Event.create(event_data);
-    const channelId = topicData.channel;
-    const chat_data = {
+    });
+    const chat = await ChannelChat.create({
       user: user_id,
       event: event._id,
       topic,
-      channel: channelId,
+      channel: topicData.channel,
       business: topicData.business,
-    };
-    const chat = await ChannelChat.create(chat_data);
+    });
+
     event.chat = chat._id;
     await event.save();
+    await EventMembership.create({
+      event: event._id,
+      user: user_id,
+      topic: topic,
+      role: topicMembership.role,
+      business: topicData.business,
+      status: "joined",
+    });
+    await emailRabbitmqService.sendEventAdminMembershipJob({
+      eventId: event._id,
+      topicId: topic,
+      creatorId: user_id,
+      business: topicData.business || null,
+    });
     await chat.populate([
       { path: "user", select: "_id username name logo color_logo" },
       { path: "event", select: EVENT_SELECT_FIELDS },
     ]);
     req.app.get("io").to(topic).emit("receive_message", chat);
-    await rabbitmqService.publishInvalidation(
-      [cacheKey, chatCacheKey],
-      "event"
-    );
+    await RedisHelper.addEventToTopic(topic, event);
+    await rabbitmqService.publishInvalidation([chatCacheKey], "event");
 
     return res.json({
       success: true,
@@ -164,6 +216,7 @@ exports.edit_chat_event = async function (req, res) {
     startTime,
     endTime,
     locationText,
+    visibility,
     location,
     cover_image,
     paywallPrice,
@@ -177,26 +230,61 @@ exports.edit_chat_event = async function (req, res) {
   let imageUrl = null;
 
   try {
-    const topicCacheKey = `${TOPIC_EVENT_PREFIX}${topic}`;
     const chatCacheKey = `${CHAT_TOPIC_PREFIX}${topic}:latest`;
-    const cacheKey = `${EVENT_PREFIX}${id}`;
+    const event = await RedisHelper.getOrCacheEvent(id);
     if (!id) {
       return res.json({
         success: false,
         message: "Event ID is required for updating.",
       });
     }
-    const event = await Event.findById(id);
-    if (!event || event.user.toString() !== user_id.toString()) {
+    const [topicData, membership] = await Promise.all([
+      Topic.findById(topic),
+      RedisHelper.getOrCacheEventMembership(id, user_id),
+    ]);
+    if (
+      !membership ||
+      (membership.role !== "admin" && membership.role !== "owner")
+    ) {
       return res.json({
         success: false,
-        message: "Event not found or you are not the owner of the event.",
+        message: "You are not a member of this event.",
       });
     }
     if (req.file) {
       imageUrl = await uploadSingleImage(req.file, "event");
     } else {
       imageUrl = cover_image || event.cover_image;
+    }
+
+    if (joining === "paid") {
+      const [channel, myPlan] = await Promise.all([
+        RedisHelper.getOrCacheChannel(
+          topicData.channel,
+          `${CachePrefix.CHANNEL_PREFIX}${topicData.channel}`
+        ),
+        RedisHelper.getBusinessPlan(topicData.business),
+      ]);
+      if (!myPlan || !myPlan.features?.paidEvents) {
+        if (topicData.business) {
+          await emailRabbitmqService.sendNotificationMessage({
+            type: "admin_notification",
+            business: topicData.business,
+            buttonText: "",
+            buttonLink: `/account/billing`,
+            content: `You don't have permission to create paid events in this channel. Upgrade your plan to add more.`,
+          });
+        }
+
+        return res.json({
+          success: true,
+          isBusiness: !!topicData.business,
+          limitReached: true,
+          username: channel?.user?.username,
+          message:
+            "You don't have permission to create paid events in this channel. Upgrade your plan to add more.",
+        });
+      }
     }
 
     let parsedLocation = location;
@@ -216,6 +304,7 @@ exports.edit_chat_event = async function (req, res) {
       endDate,
       startTime,
       endTime,
+      visibility,
       paywallPrice,
       locationText,
       location: parsedLocation,
@@ -225,7 +314,7 @@ exports.edit_chat_event = async function (req, res) {
       meet_url,
     };
 
-    await Event.findByIdAndUpdate(id, updatedEventData, {
+    const eventData = await Event.findByIdAndUpdate(id, updatedEventData, {
       new: true,
     });
     const updatedChat = await ChannelChat.findOne({ _id: event.chat }).populate(
@@ -234,10 +323,13 @@ exports.edit_chat_event = async function (req, res) {
         { path: "event", select: EVENT_SELECT_FIELDS },
       ]
     );
-    await rabbitmqService.publishInvalidation(
-      [topicCacheKey, cacheKey, chatCacheKey],
-      "event"
+    await redisService.setCache(
+      `${CachePrefix.EVENT_PREFIX}${id}`,
+      eventData,
+      3600
     );
+    await RedisHelper.updateEventInTopic(topic, eventData);
+    await rabbitmqService.publishInvalidation([chatCacheKey], "event");
     return res.json({
       success: true,
       message: "Event updated successfully.",
@@ -261,22 +353,10 @@ exports.fetch_event_memberships = async function (req, res) {
     if (!topicId) {
       return res.json({ success: false, message: "Topic ID is required" });
     }
-    const cacheKey = `${EVENT_MEMBERSHIP_PREFIX}${topicId}:${user_id}`;
-    const cachedMemberships = await redisService.getCache(cacheKey);
-    if (cachedMemberships) {
-      return res.json({
-        success: true,
-        message: "Fetched event memberships for topic",
-        memberships: cachedMemberships,
-      });
-    }
-    const memberships = await EventMembership.find({
-      topic: topicId,
-      user: user_id,
-    })
-      .select("event status user addedToCalendar topic")
-      .lean();
-    await redisService.setCache(cacheKey, memberships, 3600);
+    const memberships = await RedisHelper.getUserEventMemberships(
+      topicId,
+      user_id
+    );
     return res.json({
       success: true,
       message: "Fetched event memberships for topic",
@@ -300,28 +380,20 @@ exports.fetch_all_event_members = async function (req, res) {
     if (!eventId) {
       return res.json({ success: false, message: "Event ID is required" });
     }
-    const event = await Event.findById(eventId).select("user").lean();
-    if (event.user.toString() !== user_id.toString()) {
+    const eventMembership = await RedisHelper.getOrCacheEventMembership(
+      eventId,
+      user_id
+    );
+    if (
+      !eventMembership ||
+      (eventMembership.role !== "admin" && eventMembership.role !== "owner")
+    ) {
       return res.json({
         success: false,
-        message: "You are not the owner of the event",
+        message: "You are not a member of this event.",
       });
     }
-    const cacheKey = `${EVENT_MEMBERS_PREFIX}${eventId}`;
-    const cachedMembers = await redisService.getCache(cacheKey);
-    if (cachedMembers) {
-      return res.json({
-        success: true,
-        message: "Fetched event memberships for topic",
-        memberships: cachedMembers,
-      });
-    }
-    const memberships = await EventMembership.find({
-      event: eventId,
-    })
-      .populate([{ path: "user", select: "_id username name logo color_logo" }])
-      .lean();
-    await redisService.setCache(cacheKey, memberships, 3600);
+    const memberships = await RedisHelper.getEventMembers(eventId);
     return res.json({
       success: true,
       message: "Fetched event memberships for topic",
@@ -332,6 +404,43 @@ exports.fetch_all_event_members = async function (req, res) {
     return res.json({
       success: false,
       message: "Server error while fetching memberships",
+      error: err.message,
+    });
+  }
+};
+
+exports.fetch_all_event_requests = async function (req, res) {
+  try {
+    const { eventId } = req.body;
+    const user_id = res.locals.verified_user_id;
+
+    if (!eventId) {
+      return res.json({ success: false, message: "Event ID is required" });
+    }
+    const eventMembership = await RedisHelper.getOrCacheEventMembership(
+      eventId,
+      user_id
+    );
+    if (
+      !eventMembership ||
+      (eventMembership.role !== "admin" && eventMembership.role !== "owner")
+    ) {
+      return res.json({
+        success: false,
+        message: "You are not a member of this event.",
+      });
+    }
+    const requests = await RedisHelper.getEventRequests(eventId);
+    return res.json({
+      success: true,
+      message: "Fetched event requests for event",
+      requests: requests,
+    });
+  } catch (err) {
+    console.error("Error fetching event requests:", err);
+    return res.json({
+      success: false,
+      message: "Server error while fetching requests",
       error: err.message,
     });
   }
@@ -352,15 +461,17 @@ exports.fetch_event_data = async function (req, res) {
   }
 
   try {
-    const cacheKey = `${EVENT_PREFIX}${eventId}`;
-    const cachedEvent = await redisService.getCache(cacheKey);
+    const cachedEvent = await RedisHelper.getOrCacheEvent(eventId);
+    if (!cachedEvent) {
+      return res.json({ success: false, message: "Event not found." });
+    }
     if (cachedEvent) {
       let eventMembership = {};
       if (user_id && Types.ObjectId.isValid(user_id)) {
-        eventMembership = await EventMembership.findOne({
-          event: eventId,
-          user: user_id,
-        }).lean();
+        eventMembership = await RedisHelper.getOrCacheEventMembership(
+          eventId,
+          user_id
+        );
       }
       return res.json({
         success: true,
@@ -369,25 +480,6 @@ exports.fetch_event_data = async function (req, res) {
         membership: eventMembership,
       });
     }
-    const event = await Event.findById(eventId).select(EVENT_SELECT_FIELDS);
-    if (!event) {
-      return res.json({ success: false, message: "Event not found." });
-    }
-    let eventMembership = {};
-    if (user_id && Types.ObjectId.isValid(user_id)) {
-      eventMembership = await EventMembership.findOne({
-        event: eventId,
-        user: user_id,
-      }).lean();
-    }
-    const responseData = {
-      success: true,
-      message: "Event fetched.",
-      event: event,
-      membership: eventMembership,
-    };
-    await redisService.setCache(cacheKey, event, 3600);
-    res.json(responseData);
   } catch (error) {
     console.error("Error adding response:", error);
     res.status(500).json({ message: "Error adding response" });
@@ -404,12 +496,7 @@ exports.fetch_topic_events = async function (req, res) {
         message: "Topic ID is required",
       });
     }
-    const cacheKey = `${TOPIC_EVENT_PREFIX}${topicId}`;
-    let events = await redisService.getCache(cacheKey);
-    if (!events) {
-      events = await Event.find({ topic: topicId }).lean();
-      await redisService.setCache(cacheKey, events, 3600);
-    }
+    const events = await redisService.getTopicEvents(topicId);
     return res.json({
       success: true,
       message: "Events fetched successfully",
@@ -442,18 +529,16 @@ exports.join_event = async function (req, res) {
     const event = await Event.findById(eventId).populate([
       { path: "user", select: "_id username name logo color_logo" },
     ]);
-    const cacheMemKey = `${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${user_id}`;
-
     if (!event) {
       return res.json({
         success: false,
         message: "Event not found.",
       });
     }
-    const alreadyMember = await EventMembership.findOne({
-      event: eventId,
-      user: user_id,
-    });
+    const [topicMembership, alreadyMember] = await Promise.all([
+      RedisHelper.getTopicMembership(event.topic, user_id),
+      RedisHelper.getOrCacheEventMembership(eventId, user_id),
+    ]);
     if (alreadyMember) {
       if (alreadyMember?.status === "joined") {
         return res.json({
@@ -470,9 +555,14 @@ exports.join_event = async function (req, res) {
         message: "Request already sent. Please wait for approval.",
       });
     }
+    if (event.visibility === "topic" && !topicMembership) {
+      return res.json({
+        success: false,
+        message:
+          "You are not a member of this topic. Please join the topic first.",
+      });
+    }
     const now = new Date();
-
-    const eventStartDateTime = buildDateTime(event.startDate, event.startTime);
     const eventEndDateTime =
       event.endDate || event.endTime
         ? buildDateTime(event.endDate || event.startDate, event.endTime)
@@ -480,7 +570,12 @@ exports.join_event = async function (req, res) {
     if (eventEndDateTime && eventEndDateTime < now) {
       return res.json({ success: false, message: "Event has ended." });
     }
-    if (event.joining === "paid" && event.paywallPrice > 0) {
+    if (
+      event.joining === "paid" &&
+      event.paywallPrice > 0 &&
+      topicMembership?.role !== "owner" &&
+      topicMembership?.role !== "admin"
+    ) {
       return res.json({
         success: true,
         message: "This event is paywalled. Please purchase the event to join.",
@@ -491,24 +586,47 @@ exports.join_event = async function (req, res) {
       });
     }
     let membership = null;
-    if (event.joining === "public") {
+    if (
+      event.joining === "public" ||
+      topicMembership?.role === "owner" ||
+      topicMembership?.role === "admin"
+    ) {
       membership = await EventMembership.create({
         event: eventId,
         user: user_id,
         topic: event.topic,
         status: "joined",
+        role: topicMembership?.role ? topicMembership?.role : "member",
         business: event.business,
       });
+      await Promise.all([
+        RedisHelper.addUserEventMembership(event.topic, user_id, membership),
+        RedisHelper.addMemberToEvent(event._id, membership),
+      ]);
     } else {
       membership = await EventMembership.create({
         event: eventId,
         user: user_id,
         topic: event.topic,
+        role: "member",
         status: "request",
         business: event.business,
       });
+      const populatedRequest = await EventMembership.findById(membership._id)
+        .populate([
+          { path: "user", select: "_id name username logo color_logo email" },
+          { path: "event", select: "_id name" },
+        ])
+        .lean();
+      await RedisHelper.addRequestToEvent(eventId, populatedRequest);
+      if (event.business) {
+        await RedisHelper.appendRequestToBusinessArray(
+          `${CachePrefix.EVENT_BUSINESS_REQUESTS_PREFIX}${event.business}`,
+          populatedRequest,
+          3600
+        );
+      }
     }
-    await rabbitmqService.publishInvalidation([cacheMemKey], "event");
     return res.json({
       success: true,
       message: "Event joined sucessfully.",
@@ -538,25 +656,29 @@ exports.delete_chat_event = async function (req, res) {
         message: "No event found.",
       });
     }
-    const cacheKey = `${EVENT_PREFIX}${eventId}`;
-    const topicCacheKey = `${TOPIC_EVENT_PREFIX}${event.topic}`;
+    const cacheKey = `${CachePrefix.EVENT_PREFIX}${eventId}`;
     const chatCacheKey = `${CHAT_TOPIC_PREFIX}${event.topic}:latest`;
-    const cacheMemKey = `${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${event.user}`;
+    const cacheMembersKey = `${CachePrefix.EVENT_MEMBERS_PREFIX}${eventId}`;
+    const cacheRequestsKey = `${CachePrefix.EVENT_REQUESTS_PREFIX}${eventId}`;
     if (event.chat) {
       await ChannelChat.findOneAndDelete({ _id: event.chat });
       await EventMembership.deleteMany({ event: eventId });
-      await Event.deleteOne({ _id: eventId });
     }
+    await RedisHelper.removeEventFromTopic(event.topic, eventId);
     req.app
       .get("io")
       .to(event.topic)
       .emit("chat_deleted", { topicId: event.topic, chatId: event.chat });
     await rabbitmqService.publishInvalidation(
-      [cacheKey, topicCacheKey, chatCacheKey, cacheMemKey],
+      [cacheKey, chatCacheKey, cacheMembersKey, cacheRequestsKey],
       "event"
     );
+    await RedisHelper.removeEventFromTopic(event.topic, eventId);
     await chatRabbitmqService.publishInvalidation(
-      [`${EVENT_MEMBERSHIP_PREFIX}${event.topic}:*`],
+      [
+        `${CachePrefix.EVENT_TOPIC_MEMBERSHIP_USER_PREFIX}${event.topic}:*`,
+        `${CachePrefix.EVENT_MEMBERSHIP_PREFIX}${eventId}:*`,
+      ],
       "event",
       "event-invalidation"
     );
@@ -579,26 +701,43 @@ exports.accept_event_request = async function (req, res, next) {
   const { eventId, userId, email } = req.body;
   const user_id = res.locals.verified_user_id;
   try {
-    const event = await Event.findById(eventId)
-      .select("user _id logo name topic cover_image")
-      .populate([{ path: "user", select: "_id username" }])
-      .lean();
-    if (!event || event.user._id.toString() !== user_id.toString()) {
+    const [event, eventMembership] = await Promise.all([
+      Event.findById(eventId)
+        .select("user _id logo name topic cover_image business")
+        .populate([{ path: "user", select: "_id username" }])
+        .lean(),
+      RedisHelper.getOrCacheEventMembership(eventId, user_id),
+    ]);
+    if (
+      !eventMembership ||
+      (eventMembership.role !== "admin" && eventMembership.role !== "owner")
+    ) {
       return res.json({
         success: false,
-        message: "No event found or you are not the owner.",
+        message: "You don't have permission to accept event request.",
       });
     }
-    await EventMembership.findOneAndUpdate(
+
+    const membership = await EventMembership.findOneAndUpdate(
       { event: eventId, user: userId, status: "request" },
       { status: "joined" },
       { new: true }
     ).lean();
-    const membersCacheKey = `${EVENT_MEMBERS_PREFIX}${eventId}`;
-    await rabbitmqService.publishInvalidation(
-      [membersCacheKey, `${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${user_id}`],
-      "event"
-    );
+    await membership.populate([
+      { path: "user", select: "_id username name logo color_logo" },
+    ]);
+    await Promise.all([
+      RedisHelper.addMemberToEvent(eventId, membership),
+      RedisHelper.updateEventMembershipCache(eventId, userId, membership),
+      RedisHelper.updateUserEventMembership(event.topic, userId, membership),
+      RedisHelper.removeRequestFromEvent(eventId, userId),
+    ]);
+    if (event.business) {
+      await RedisHelper.removeRequestFromBusinessArray(
+        `${CachePrefix.EVENT_BUSINESS_REQUESTS_PREFIX}${event.business}`,
+        membership._id
+      );
+    }
     if (email && email !== "") {
       await emailRabbitmqService.sendEmailMessage({
         to: email,
@@ -635,11 +774,17 @@ exports.decline_event_request = async function (req, res, next) {
   const user_id = res.locals.verified_user_id;
 
   try {
-    const event = await Event.findById(eventId).select("user _id topic").lean();
-    if (!event || event.user.toString() !== user_id.toString()) {
+    const [event, eventMembership] = await Promise.all([
+      RedisHelper.getOrCacheEvent(eventId),
+      RedisHelper.getOrCacheEventMembership(eventId, user_id),
+    ]);
+    if (
+      !eventMembership ||
+      (eventMembership.role !== "admin" && eventMembership.role !== "owner")
+    ) {
       return res.json({
         success: false,
-        message: "No event found or you are not the owner.",
+        message: "You don't have permission to accept event request.",
       });
     }
     const existingRequest = await EventMembership.findOne({
@@ -650,9 +795,18 @@ exports.decline_event_request = async function (req, res, next) {
     if (existingRequest) {
       await existingRequest.deleteOne();
     }
-    const membersCacheKey = `${EVENT_MEMBERS_PREFIX}${eventId}`;
+    await Promise.all([
+      RedisHelper.removeUserEventMembership(event.topic, user_id, eventId),
+      RedisHelper.removeRequestFromEvent(eventId, userId),
+    ]);
+    if (event.business) {
+      await RedisHelper.removeRequestFromBusinessArray(
+        `${CachePrefix.EVENT_BUSINESS_REQUESTS_PREFIX}${event.business}`,
+        existingRequest._id
+      );
+    }
     await rabbitmqService.publishInvalidation(
-      [membersCacheKey, `${EVENT_MEMBERSHIP_PREFIX}${event.topic}:${user_id}`],
+      [`${CachePrefix.EVENT_MEMBERSHIP_PREFIX}${eventId}:${userId}`],
       "event"
     );
     return res.json({
@@ -671,11 +825,12 @@ exports.decline_event_request = async function (req, res, next) {
   }
 };
 
-exports.create_poll = async function (req, res) {
+exports.create_chat_poll = async function (req, res) {
   const userId = res.locals.verified_user_id;
-  const { question, options, topic, type, showResults, multipleChoice } =
+  const { name, question, choices, topic, type, visibility, showResults } =
     req.body;
-  if (!question || !options || options.length === 0 || !topic) {
+  console.log(question, choices, topic);
+  if (!question || !choices || choices.length === 0 || !topic) {
     return res.json({
       success: false,
       message: "Question ,topic and options are required!",
@@ -683,47 +838,55 @@ exports.create_poll = async function (req, res) {
   }
 
   try {
-    const topicData = await Topic.findById(topic);
+    const [topicData, topicMembership] = await Promise.all([
+      Topic.findById(topic),
+      RedisHelper.getTopicMembership(userId, topic),
+    ]);
     if (!topicData) {
       return res.json({
         success: false,
-        message: "Invalid topic ID provided.",
+        message: "Topic not found",
       });
     }
-    const channelId = topicData.channel;
+    if (
+      !topicMembership ||
+      (topicMembership.role !== "admin" && topicMembership.role !== "owner")
+    ) {
+      return res.json({
+        success: false,
+        message: "You don't have permission to create event in this topic.",
+      });
+    }
+    const channelId = topicData.channel._id;
     const newPollChat = new Poll({
       user: userId,
       topic: topic,
       question: question,
-      options: options,
+      choices: choices,
       business: topicData.business,
       showResults: showResults,
-      multipleChoice: multipleChoice,
-      responses: [],
-      anonymousResponses: [],
       isClosed: false,
+      name: name || "Poll",
       type: type,
+      visibility: visibility || "anyone",
     });
-    const cacheKey = `${TOPIC_POLL_PREFIX}${topic}`;
-    const chatCacheKey = `${CHAT_TOPIC_PREFIX}${topic}:latest`;
-
-    const savedPollChat = await newPollChat.save();
-    const chat_data = {
+    const chat = await ChannelChat.create({
       user: userId,
-      poll: savedPollChat._id,
+      poll: newPollChat._id,
       topic: topic,
       channel: channelId,
       business: topicData.business,
-    };
-
-    const chat = await ChannelChat.create(chat_data);
-    savedPollChat.chat = chat._id;
-    await savedPollChat.save();
+    });
+    newPollChat.chat = chat._id;
+    await newPollChat.save();
+    await RedisHelper.addPollToTopic(topic, newPollChat);
+    const chatCacheKey = `${CHAT_TOPIC_PREFIX}${topic}:latest`;
     await chat.populate([
-      { path: "user", select: "_id username name" },
+      { path: "user", select: "_id username name logo color_logo" },
       { path: "poll", select: POLL_SELECT_FIELDS },
     ]);
-    await rabbitmqService.publishInvalidation([cacheKey, chatCacheKey], "poll");
+    req.app.get("io").to(topic).emit("receive_message", chat);
+    await rabbitmqService.publishInvalidation([chatCacheKey], "poll");
     return res.json({
       success: true,
       message: "Poll created successfully.",
@@ -738,9 +901,11 @@ exports.create_poll = async function (req, res) {
   }
 };
 
-exports.fetch_topic_polls = async function (req, res) {
+exports.fetch_topic_poll_responses = async function (req, res) {
   const { topicId } = req.body;
-
+  const userId = res.locals.verified_user_id;
+  const ip = req.ip || req.headers["x-forwarded-for"];
+  console.log(topicId,userId);
   try {
     if (!topicId) {
       return res.json({
@@ -748,26 +913,39 @@ exports.fetch_topic_polls = async function (req, res) {
         message: "Topic ID is required",
       });
     }
-    const cacheKey = `${TOPIC_POLL_PREFIX}${topicId}`;
-    const cachedChats = await redisService.getCache(cacheKey);
-    if (cachedChats) {
-      return res.json(cachedChats);
+    const polls = await RedisHelper.getOrCacheTopicPolls(topicId);
+    if (!polls || polls.length === 0) {
+      return res.json({
+        success: true,
+        responses: [],
+        message: "No polls found for this topic.", 
+      });
     }
-    const polls = await Poll.find({ topic: topicId }).populate([
-      { path: "user", select: "_id username name" },
+
+    const pollIds = polls.map((p) => p._id.toString());
+
+    const [voteSummaryMap, voteRecordMap] = await Promise.all([
+      RedisHelper.getMultiplePollVoteSummaries(pollIds),
+      RedisHelper.getUserPollVoteRecords(pollIds, userId, ip),
     ]);
+    const responses = pollIds.map((pollId) => ({
+      pollId,
+      voteCounts: voteSummaryMap[pollId] || {},
+      userResponded: !!voteRecordMap[pollId],
+      userChoice: voteRecordMap[pollId],
+    }));
+
     const responseData = {
       success: true,
-      message: "Polls fetched successfully",
-      polls: polls,
+      message: "Polls responses fetched successfully",
+      responses,
     };
-    await redisService.setCache(cacheKey, responseData, 3600);
     return res.json(responseData);
   } catch (error) {
-    console.error("Error fetching polls:", error);
+    console.error("Error fetching poll responses:", error);
     return res.status(500).json({
       success: false,
-      message: "Error fetching polls",
+      message: "Error fetching poll responses",
       error: error.message,
     });
   }
@@ -775,51 +953,78 @@ exports.fetch_topic_polls = async function (req, res) {
 
 exports.make_private_poll_response = async function (req, res) {
   const userId = res.locals.verified_user_id;
-  const { choices, pollId } = req.body;
+  const { choice, pollId } = req.body;
+  const ip = null;
 
   try {
-    const poll = await Poll.findById(pollId);
+    if (!userId || !choice || !pollId) {
+      return res.json({
+        success: false,
+        message: "User ID, choice, and poll ID are required.",
+      });
+    }
+    const cacheKey = `${CachePrefix.POLL_PREFIX}${pollId}`;
+    let poll = await redisService.getCache(cacheKey);
+    // let poll = null;
     if (!poll) {
-      return res.json({ success: false, message: "Poll not found." });
+      poll = await Poll.findById(pollId);
     }
-    const cacheKey = `${POLL_PREFIX}${pollId}`;
-    const cachePollKey = `${TOPIC_POLL_PREFIX}${poll.topic}`;
-    if (!Array.isArray(choices) || choices.length === 0) {
-      return res.json({ success: false, message: "Choices are required." });
+    console.log(poll);
+    if(!poll){
+      return res.json({
+        success:false,
+        message:"Poll no found"
+      });
     }
-    const invalidChoice = choices.find(
-      (choice) => !poll.options.includes(choice)
-    );
+    const invalidChoice = !poll.choices.includes(choice);
     if (invalidChoice) {
       return res.json({
         success: false,
-        message: `Invalid choice: ${invalidChoice}`,
-      });
-    }
-    if (!poll.multipleChoice && choices.length > 1) {
-      return res.json({
-        success: false,
-        message: "Multiple choices not allowed in this poll.",
-      });
-    }
-    const existing = poll.responses.find((r) => r.user.toString() === userId);
-    if (existing) {
-      return res.json({
-        success: false,
-        message: "User has already responded.",
+        message: `Invalid choice: ${choice}`,
       });
     }
     if (poll.isClosed) {
       return res.json({ success: false, message: "Poll is closed." });
     }
-    poll.responses.push({ user: userId, choice: choices });
-    const poll_data = await poll.save();
-    await poll_data.populate([{ path: "user", select: "_id username name" }]);
-    await rabbitmqService.publishInvalidation([cacheKey, cachePollKey], "poll");
+    const alreadyVotedMap = await RedisHelper.getUserPollVoteRecords(
+      [pollId],
+      userId,
+      ip
+    );
+    if (alreadyVotedMap[pollId]) {
+      return res.json({
+        success: false,
+        message: "You have already voted in this poll.",
+      });
+    }
+    await PollVote.create({
+      poll: poll._id,
+      topic: poll.topic,
+      user: userId || null,
+      ip: ip,
+      choice: choice,
+    });
+
+    await Promise.all([
+      RedisHelper.setUserVoted(pollId, userId, ip, choice),
+      RedisHelper.incrementPollChoiceCount(pollId, choice),
+    ]);
+    const voteCounts = await RedisHelper.getPollVoteSummary(pollId);
+
+    voteCounts[choice] = (parseInt(voteCounts[choice] || 0)).toString();
+    const userChoice = choice;
+
+    const response = {
+      pollId,
+      voteCounts,
+      userResponded: true,
+      userChoice,
+    };
+    
     res.json({
       success: true,
       message: "Response added to poll.",
-      poll: poll_data,
+      response:response
     });
   } catch (error) {
     console.error("Error adding response:", error);
@@ -828,65 +1033,121 @@ exports.make_private_poll_response = async function (req, res) {
 };
 
 exports.make_public_poll_response = async function (req, res) {
-  const { choices, pollId, userId } = req.body;
+  const { choice, pollId, userId } = req.body;
   const ip = req.ip || req.headers["x-forwarded-for"];
+  console.log(userId,ip);
+  if (!pollId || !choice) {
+    return res.json({
+      success: false,
+      message: "Poll ID and choice are required.",
+    });
+  }
+  if (!userId && !ip) {
+    return res.json({ success: false, message: "User ID or IP is required." });
+  }
 
   try {
     const poll = await Poll.findById(pollId);
-    if (!poll) {
-      return res.json({ success: false, message: "Poll not found." });
+    if (!poll || poll.isClosed) {
+      return res.json({
+        success: false,
+        message: "Poll not found or is closed.",
+      });
     }
-    const cacheKey = `${POLL_PREFIX}${pollId}`;
-    const cachePollKey = `${TOPIC_POLL_PREFIX}${poll.topic}`;
 
-    if (!Array.isArray(choices) || choices.length === 0) {
-      return res.json({ success: false, message: "Choices are required." });
+    if (!poll.choices.includes(choice)) {
+      return res.json({ success: false, message: "Invalid choice." });
     }
-    const invalidChoice = choices.find(
-      (choice) => !poll.options.includes(choice)
-    );
-    if (invalidChoice) {
-      return res.json({
-        success: false,
-        message: `Invalid choice: ${invalidChoice}`,
-      });
+
+    const alreadyVoted = await RedisHelper.hasVoted(pollId, userId, ip);
+    if (alreadyVoted) {
+      return res.json({ success: false, message: "Already voted." });
     }
-    if (!poll.multipleChoice && choices.length > 1) {
-      return res.json({
-        success: false,
-        message: "Multiple choices not allowed.",
-      });
-    }
-    if (userId) {
-      const existing = poll.responses.find((r) => r.user.toString() === userId);
-      if (existing) {
-        return res.json({
-          success: false,
-          message: "User has already responded.",
-        });
-      }
-      poll.responses.push({ user: userId, choice: choices });
-    } else {
-      const alreadyVoted = poll.anonymousResponses.find((r) => r.ip === ip);
-      if (alreadyVoted) {
-        return res.json({
-          success: false,
-          message: "Already voted from this IP.",
-        });
-      }
-      poll.anonymousResponses.push({ ip: ip, choice: choices });
-    }
-    const poll_data = await poll.save();
-    await poll_data.populate([{ path: "user", select: "_id username name" }]);
-    await rabbitmqService.publishInvalidation([cacheKey, cachePollKey], "poll");
-    res.json({
+    await PollVote.create({
+      poll: poll._id,
+      topic: poll.topic,
+      user: userId || null,
+      ip: userId ? null : ip,
+      choice,
+    });
+    await Promise.all([
+      RedisHelper.setUserVoted(pollId, userId, ip, choice),
+      RedisHelper.incrementPollChoiceCount(pollId, choice),
+    ]);
+    const voteCounts = await RedisHelper.getPollVoteSummary(pollId);
+
+    voteCounts[choice] = (parseInt(voteCounts[choice] || 0)).toString();
+    const userChoice = choice;
+
+    const response = {
+      pollId,
+      voteCounts,
+      userResponded: true,
+      userChoice,
+    };
+
+    return res.json({
       success: true,
-      message: "Anonymous response recorded.",
-      poll: poll_data,
+      message: "Vote recorded successfully.",
+      response:response
     });
   } catch (error) {
-    console.error("Error adding anonymous response:", error);
-    res.status(500).json({ success: false, message: "Internal server error." });
+    console.error("Error in public poll vote:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error.",
+    });
+  }
+};
+
+exports.fetch_poll_data = async function (req, res) {
+  const { pollId, userId } = req.body;
+  const ip = req.ip || req.headers["x-forwarded-for"];
+  if (!pollId || !mongoose.Types.ObjectId.isValid(pollId)) {
+    return res.json({
+      success: false,
+      message: "Invalid poll ID",
+    });
+  }
+  try {
+    const cacheKey = `${CachePrefix.POLL_PREFIX}${pollId}`;
+    let poll = await redisService.getCache(cacheKey);
+    if (!poll) {
+      poll = await Poll.findById(pollId).lean();
+    }
+    let isAdmin = false;
+    let isTopicMembership = false;
+    if(userId){
+      const membership = await TopicMembership.findOne({
+        topic:poll.topic, 
+        user:userId,
+        status:"joined",
+      });
+      if(membership && (membership.role==="admin" || membership.role==="owner")){
+        isAdmin=true;
+      }
+      if(membership){
+        isTopicMembership = true;
+      }
+    }
+    const voteCounts = await RedisHelper.getPollVoteSummary(pollId);
+    const userChoice = await RedisHelper.hasVoted(pollId, userId, ip);
+    const userResponded = !!userChoice;
+
+    const response = {
+      pollId,
+      voteCounts,
+      userResponded,
+      userChoice,
+    };
+    res.json({
+      success: true,
+      response,
+      poll: { ...poll, isAdmin , isTopicMembership }
+    });
+  } catch (error) {
+    console.error("Error fetching poll data:", error);
+    res.status(500).json({ message: "Error fetching poll data" });
   }
 };
 
@@ -899,22 +1160,33 @@ exports.delete_chat_poll = async function (req, res) {
     });
   }
   try {
-    const poll = await Poll.findOneAndDelete({ _id: pollId });
+    const cacheKey = `${CachePrefix.POLL_PREFIX}${pollId}`;
+    let poll = await redisService.getCache(cacheKey);
     if (!poll) {
-      return res.json({
-        success: false,
-        message: "No event found.",
-      });
+      poll = await Poll.findById(pollId);
     }
-    const cacheKey = `${POLL_PREFIX}${pollId}`;
-    const topicCacheKey = `${TOPIC_POLL_PREFIX}${poll.topic}`;
-    const chatCacheKey = `${CHAT_TOPIC_PREFIX}${poll.topic}:latest`;
+    await Promise.all([
+      Poll.findOneAndDelete({ _id: pollId }),
+      PollVote.deleteMany({ poll: pollId }),
+      RedisHelper.removePollFromTopic(poll.topic, pollId),
+    ]);
+    const pollVotecountkey = `${CachePrefix.POLL_VOTE_COUNTS_PREFIX}${pollId}`;
+    const chatCacheKey = `${CachePrefix.CHAT_TOPIC_PREFIX}${poll.topic}:latest`;
     if (poll.chat) {
       await ChannelChat.findOneAndDelete({ _id: poll.chat });
     }
+     req.app
+      .get("io")
+      .to(poll.topic)
+      .emit("chat_deleted", { topicId: poll.topic, chatId: poll.chat });
     await rabbitmqService.publishInvalidation(
-      [cacheKey, topicCacheKey, chatCacheKey],
+      [cacheKey, chatCacheKey, pollVotecountkey],
       "poll"
+    );
+    await chatRabbitmqService.publishInvalidation(
+      [`${CachePrefix.POLL_USER_VOTE_PREFIX}${pollId}:*`],
+      "poll",
+      "poll-invalidation"
     );
     return res.json({
       success: true,

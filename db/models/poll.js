@@ -6,14 +6,23 @@ var PollSchema = new Schema(
   {
     question: {
       type: String,
-      required: false,
+      required: true,
+    },
+    name: {
+      type: String,
+      default: "Poll",
     },
     type: {
       type: String,
       enum: ["public", "private"],
-      default: "private",
+      default: "public",
     },
-    options: [
+    visibility: {
+      type: String,
+      enum: ["anyone", "topic"],
+      default: "anyone",
+    },
+    choices: [
       {
         type: String,
         required: false,
@@ -23,30 +32,10 @@ var PollSchema = new Schema(
       type: Boolean,
       default: false,
     },
-
     isClosed: {
       type: Boolean,
       default: false,
     },
-    responses: [
-      {
-        user: {
-          type: Schema.Types.ObjectId,
-          ref: "User",
-        },
-        choice: [
-          {
-            type: String,
-          },
-        ],
-      },
-    ],
-    anonymousResponses: [
-      {
-        choice: [String],
-        ip: String,
-      },
-    ],
     user: {
       type: Schema.Types.ObjectId,
       ref: "User",
