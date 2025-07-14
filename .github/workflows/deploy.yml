@@ -1,0 +1,56 @@
+name: Deploy to Multiple EC2s
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-mumbai:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Deploy to Mumbai EC2
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host: ${{ secrets.EC2_MUMBAI_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_MUMBAI_SSH_KEY }}
+        script: |
+          cd /home/ubuntu/channels-backend
+          git pull origin main
+          docker-compose down -v
+          docker volume prune -f
+          docker-compose up -d --build
+
+
+  deploy-tokyo:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Deploy to Tokyo EC2
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host: ${{ secrets.EC2_TOKYO_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_TOKYO_SSH_KEY }}
+        script: |
+          cd /home/ubuntu/channels-backend
+          git pull origin main
+          docker-compose down -v
+          docker volume prune -f
+          docker-compose up -d --build
+  
+  deploy-us:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Deploy to US EC2
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host: ${{ secrets.EC2_US_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_US_SSH_KEY }}
+        script: |
+          cd /home/ubuntu/channels-backend
+          git pull origin main
+          docker-compose down -v
+          docker volume prune -f
+          docker-compose up -d --build
